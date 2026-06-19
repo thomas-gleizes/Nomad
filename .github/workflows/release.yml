@@ -1,6 +1,6 @@
 name: Release
 
-# Compile no-border pour Linux/Windows (x86_64) et macOS (Intel + Apple Silicon).
+# Compile nomad pour Linux/Windows (x86_64) et macOS (Intel + Apple Silicon).
 # - Sur chaque exécution : produit des artefacts téléchargeables depuis l'onglet Actions.
 # - Sur un tag `vX.Y.Z` : publie en plus les binaires comme assets d'une Release GitHub.
 on:
@@ -65,10 +65,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bin="no-border"
+          bin="nomad"
           target="${{ matrix.target }}"
           version="${GITHUB_REF_NAME}"
-          name="no-border-${version}-${target}"
+          name="nomad-${version}-${target}"
           mkdir -p dist
           if [[ "$target" == *windows* ]]; then
             cp "target/${target}/release/${bin}.exe" "dist/"
@@ -83,7 +83,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: no-border-${{ matrix.target }}
+          name: nomad-${{ matrix.target }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
 

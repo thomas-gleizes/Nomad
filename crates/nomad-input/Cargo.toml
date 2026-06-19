@@ -1,0 +1,12 @@
+[package]
+name = "nomad-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nomad-core = { workspace = true }
+rdev = { workspace = true }
+enigo = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

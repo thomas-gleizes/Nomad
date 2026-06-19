@@ -904,17 +904,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "nb-app"
+name = "nomad-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "directories",
  "display-info",
- "nb-clip",
- "nb-core",
- "nb-input",
- "nb-net",
+ "nomad-clip",
+ "nomad-core",
+ "nomad-input",
+ "nomad-net",
  "serde",
  "tokio",
  "toml",
@@ -924,7 +924,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nb-clip"
+name = "nomad-clip"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -933,7 +933,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nb-core"
+name = "nomad-core"
 version = "0.1.0"
 dependencies = [
  "bincode",
@@ -943,23 +943,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "nb-input"
+name = "nomad-input"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "enigo",
- "nb-core",
+ "nomad-core",
  "rdev",
  "tracing",
 ]
 
 [[package]]
-name = "nb-net"
+name = "nomad-net"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "mdns-sd",
- "nb-core",
+ "nomad-core",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

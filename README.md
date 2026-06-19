@@ -1,4 +1,4 @@
-# no-border
+# nomad
 
 Partage **souris / clavier / presse-papiers** entre plusieurs machines d'un même
 réseau local — un clone minimaliste de *Mouse Without Borders*, écrit en Rust et
@@ -18,11 +18,11 @@ Workspace Cargo en 5 crates, du plus pur au plus dépendant de l'OS :
 
 | Crate | Rôle |
 |-------|------|
-| `nb-core` | Types partagés : protocole (`Message`), événements portables (`InputEvent`, `Key`, `Button`), disposition (`Layout`), codec de trame. Aucune dépendance OS — entièrement testable. |
-| `nb-net` | Découverte mDNS (`mdns-sd`), élection de rôle, transport TCP (hub en étoile, tokio). |
-| `nb-input` | Capture (`rdev`) et injection (`enigo`) d'entrées + table de correspondance clavier. |
-| `nb-clip` | Synchronisation du presse-papiers (`arboard`). |
-| `nb-app` | Binaire `no-border` : CLI, configuration, orchestration et machine d'edge-switching. |
+| `nomad-core` | Types partagés : protocole (`Message`), événements portables (`InputEvent`, `Key`, `Button`), disposition (`Layout`), codec de trame. Aucune dépendance OS — entièrement testable. |
+| `nomad-net` | Découverte mDNS (`mdns-sd`), élection de rôle, transport TCP (hub en étoile, tokio). |
+| `nomad-input` | Capture (`rdev`) et injection (`enigo`) d'entrées + table de correspondance clavier. |
+| `nomad-clip` | Synchronisation du presse-papiers (`arboard`). |
+| `nomad-app` | Binaire `nomad` : CLI, configuration, orchestration et machine d'edge-switching. |
 
 ### Flux
 
@@ -55,7 +55,7 @@ cargo build --release
 cargo test --workspace   # tests unitaires (codec, keymap, edge-switching) + loopback réseau
 ```
 
-Le binaire est produit dans `target/release/no-border`.
+Le binaire est produit dans `target/release/nomad`.
 
 ## Utilisation
 
@@ -63,15 +63,15 @@ Sur la machine principale (celle avec le clavier/souris), puis sur chaque machin
 secondaire :
 
 ```sh
-no-border                      # découverte automatique du rôle
-no-border --server             # forcer le rôle serveur
-no-border --name "portable"    # nom affiché
-no-border --port 47800         # port serveur
-RUST_LOG=debug no-border       # logs détaillés
+nomad                      # découverte automatique du rôle
+nomad --server             # forcer le rôle serveur
+nomad --name "portable"    # nom affiché
+nomad --port 47800         # port serveur
+RUST_LOG=debug nomad       # logs détaillés
 ```
 
 L'identité du nœud (UUID stable) et les préférences sont stockées dans
-`~/.config/no-border/config.toml` (Linux/macOS).
+`~/.config/nomad/config.toml` (Linux/macOS).
 
 La disposition par défaut aligne les machines **horizontalement, de gauche à
 droite, dans l'ordre de connexion** (le serveur étant le plus à gauche).

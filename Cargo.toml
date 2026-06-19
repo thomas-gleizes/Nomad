@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nb-core",
-    "crates/nb-net",
-    "crates/nb-input",
-    "crates/nb-clip",
-    "crates/nb-app",
+    "crates/nomad-core",
+    "crates/nomad-net",
+    "crates/nomad-input",
+    "crates/nomad-clip",
+    "crates/nomad-app",
 ]
 
 [workspace.package]
@@ -16,10 +16,10 @@ repository = "https://github.com/thomasgleizes34/no-border"
 
 [workspace.dependencies]
 # Internal crates
-nb-core = { path = "crates/nb-core" }
-nb-net = { path = "crates/nb-net" }
-nb-input = { path = "crates/nb-input" }
-nb-clip = { path = "crates/nb-clip" }
+nomad-core = { path = "crates/nomad-core" }
+nomad-net = { path = "crates/nomad-net" }
+nomad-input = { path = "crates/nomad-input" }
+nomad-clip = { path = "crates/nomad-clip" }
 
 # Async runtime + networking
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }

@@ -1,4 +1,4 @@
-# Bilan du projet `no-border`
+# Bilan du projet `nomad`
 
 Application de partage **souris / clavier / presse-papiers** sur LAN, cross-OS
 (macOS, Windows, Linux/X11), écrite en Rust — clone minimaliste de *Mouse Without
@@ -10,11 +10,11 @@ Workspace Cargo en **5 crates** — build complet sans warning, **12 tests verts
 
 | Crate | Contenu | Tests |
 |-------|---------|-------|
-| `nb-core` | Protocole `Message`, `InputEvent/Key/Button` portables, `Layout`, codec de trame — pur, sans dépendance OS | codec round-trip + décodage en flux (3) |
-| `nb-net` | Découverte mDNS (`mdns-sd`), élection de rôle, transport TCP en étoile (tokio) | loopback serveur↔client (1) |
-| `nb-input` | Capture `rdev` + injection `enigo` + keymap rdev↔core↔enigo | round-trip clavier/boutons (3) |
-| `nb-clip` | Synchro presse-papiers `arboard` (thread unique, anti-écho) | — |
-| `nb-app` | Binaire `no-border` : CLI, config TOML persistante, orchestration + edge-switching | transitions de bord (5) |
+| `nomad-core` | Protocole `Message`, `InputEvent/Key/Button` portables, `Layout`, codec de trame — pur, sans dépendance OS | codec round-trip + décodage en flux (3) |
+| `nomad-net` | Découverte mDNS (`mdns-sd`), élection de rôle, transport TCP en étoile (tokio) | loopback serveur↔client (1) |
+| `nomad-input` | Capture `rdev` + injection `enigo` + keymap rdev↔core↔enigo | round-trip clavier/boutons (3) |
+| `nomad-clip` | Synchro presse-papiers `arboard` (thread unique, anti-écho) | — |
+| `nomad-app` | Binaire `nomad` : CLI, config TOML persistante, orchestration + edge-switching | transitions de bord (5) |
 
 ### Mécanique demandée
 
@@ -56,7 +56,7 @@ Le binaire démarre, détecte l'écran (1800×1169), prend le rôle serveur, éc
 Nécessite **2 machines** (ou une VM Linux + le Mac) et, sur macOS, d'accorder les
 permissions *Accessibilité* + *Surveillance des entrées*.
 
-1. Lancer `no-border` sur chaque machine.
+1. Lancer `nomad` sur chaque machine.
 2. Vérifier la découverte/élection dans les logs.
 3. Pousser le curseur au bord de l'écran pour basculer sur la machine voisine.
 4. Taper au clavier, faire un copier/coller entre machines.
@@ -66,9 +66,9 @@ cargo build --release
 cargo test --workspace
 
 # Sur la machine principale (clavier/souris), puis sur les secondaires :
-no-border                   # découverte automatique du rôle
-no-border --server          # forcer le rôle serveur
-RUST_LOG=debug no-border    # logs détaillés
+nomad                   # découverte automatique du rôle
+nomad --server          # forcer le rôle serveur
+RUST_LOG=debug nomad    # logs détaillés
 ```
 
 ## Prochaines étapes possibles
