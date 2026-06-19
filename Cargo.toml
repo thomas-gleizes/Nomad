@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nb-core",
+    "crates/nb-net",
+    "crates/nb-input",
+    "crates/nb-clip",
+    "crates/nb-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thomasgleizes34/no-border"
+
+[workspace.dependencies]
+# Internal crates
+nb-core = { path = "crates/nb-core" }
+nb-net = { path = "crates/nb-net" }
+nb-input = { path = "crates/nb-input" }
+nb-clip = { path = "crates/nb-clip" }
+
+# Async runtime + networking
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+
+# Discovery
+mdns-sd = "0.11"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+toml = "0.8"
+
+# Input
+rdev = { version = "0.5", features = ["unstable_grab"] }
+enigo = "0.2"
+arboard = "3"
+display-info = "0.5"
+
+# Utils
+uuid = { version = "1", features = ["v4", "serde"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "1"
+directories = "5"
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -1,0 +1,96 @@
+name: Release
+
+# Compile no-border pour Linux/Windows (x86_64) et macOS (Intel + Apple Silicon).
+# - Sur chaque exécution : produit des artefacts téléchargeables depuis l'onglet Actions.
+# - Sur un tag `vX.Y.Z` : publie en plus les binaires comme assets d'une Release GitHub.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dépendances système X11/XCB requises par rdev, enigo et arboard sous Linux.
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxi-dev libxtst-dev libxdo-dev libxkbcommon-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Empaquette le binaire (tar.gz hors Windows, zip sous Windows).
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="no-border"
+          target="${{ matrix.target }}"
+          version="${GITHUB_REF_NAME}"
+          name="no-border-${version}-${target}"
+          mkdir -p dist
+          if [[ "$target" == *windows* ]]; then
+            cp "target/${target}/release/${bin}.exe" "dist/"
+            (cd dist && 7z a "${name}.zip" "${bin}.exe" >/dev/null)
+            echo "ASSET=dist/${name}.zip" >> "$GITHUB_ENV"
+          else
+            cp "target/${target}/release/${bin}" "dist/"
+            (cd dist && tar czf "${name}.tar.gz" "${bin}")
+            echo "ASSET=dist/${name}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: no-border-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+      # Sur un tag : attache l'archive à la Release GitHub (créée si nécessaire).
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          fail_on_unmatched_files: true
