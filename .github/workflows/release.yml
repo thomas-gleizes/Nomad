@@ -28,9 +28,6 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
-          - target: x86_64-apple-darwin
-            os: macos-13
-            archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
@@ -38,7 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Dépendances système X11/XCB requises par rdev, enigo et arboard sous Linux.
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -60,7 +56,6 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      # Empaquette le binaire (tar.gz hors Windows, zip sous Windows).
       - name: Package
         shell: bash
         run: |
@@ -87,7 +82,6 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
-      # Sur un tag : attache l'archive à la Release GitHub (créée si nécessaire).
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
