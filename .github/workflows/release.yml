@@ -1,22 +1,127 @@
 name: Release
 
-# Compile nomad pour Linux/Windows (x86_64) et macOS (Intel + Apple Silicon).
-# - Sur chaque exécution : produit des artefacts téléchargeables depuis l'onglet Actions.
-# - Sur un tag `vX.Y.Z` : publie en plus les binaires comme assets d'une Release GitHub.
+# Compile nomad pour Linux/Windows (x86_64) et macOS (Apple Silicon).
+#
+# Auto-release sur push `main`, à partir du préfixe du dernier commit :
+#   - `fix...`  -> bump patch  (vX.Y.Z+1)
+#   - `feat...` -> bump minor  (vX.Y+1.0)
+#   - tout autre préfixe -> aucune release (mais `test` tourne toujours)
+#
+# Ordre des jobs : `version` (calcule la prochaine version, ne tagge PAS) et
+# `test` en parallèle, puis `build` (matrice), puis `release` qui crée le tag
+# et publie la Release GitHub **une seule fois**, avec tous les assets. Le tag
+# n'est donc créé que si tests et builds ont réussi : un échec ne laisse pas de
+# tag orphelin, et on évite la course des jobs matrix sur la création de la
+# release. (Un tag créé par GITHUB_TOKEN ne redéclenche pas de workflow.)
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Type de bump (auto = déduit du message de commit)"
+        type: choice
+        options: [auto, patch, minor, major, none]
+        default: auto
 
 permissions:
   contents: write
 
+# Sérialise les runs : deux pushes rapprochés calculeraient la même version.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      release: ${{ steps.bump.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # historique + tags complets pour calculer la version
+
+      - name: Déterminer le bump et la prochaine version
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Type de bump : entrée manuelle prioritaire, sinon préfixe du commit.
+          requested="${{ github.event.inputs.bump || 'auto' }}"
+          if [[ "$requested" != "auto" ]]; then
+            bump="$requested"
+          else
+            msg="$(git log -1 --pretty=%s)"
+            echo "Dernier commit : $msg"
+            if   [[ "$msg" =~ ^feat(\(.+\))?!?: ]]; then bump="minor"
+            elif [[ "$msg" =~ ^fix(\(.+\))?!?:  ]]; then bump="patch"
+            else bump="none"
+            fi
+          fi
+          echo "Bump retenu : $bump"
+
+          if [[ "$bump" == "none" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Aucune release pour ce commit."
+            exit 0
+          fi
+
+          # 2. Version courante = dernier tag vX.Y.Z (défaut v0.0.0).
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          latest="${latest:-v0.0.0}"
+          echo "Dernier tag : $latest"
+          IFS=. read -r major minor patch <<< "${latest#v}"
+
+          # 3. Application du bump.
+          case "$bump" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          new="v${major}.${minor}.${patch}"
+          echo "Nouvelle version : $new"
+
+          if git rev-parse -q --verify "refs/tags/${new}" >/dev/null; then
+            echo "::error::Le tag ${new} existe déjà." && exit 1
+          fi
+
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+  # Filet de sécurité : tourne sur CHAQUE push, release ou pas.
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxi-dev libxtst-dev libxdo-dev libxkbcommon-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+
+      - name: Test
+        run: cargo test --workspace --locked
+
   build:
     name: ${{ matrix.target }}
+    needs: [version, test]
+    if: needs.version.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -58,12 +163,13 @@ jobs:
 
       - name: Package
         shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           bin="nomad"
           target="${{ matrix.target }}"
-          version="${GITHUB_REF_NAME}"
-          name="nomad-${version}-${target}"
+          name="nomad-${VERSION}-${target}"
           mkdir -p dist
           if [[ "$target" == *windows* ]]; then
             cp "target/${target}/release/${bin}.exe" "dist/"
@@ -82,9 +188,25 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  # Publie UNE release avec tous les assets ; c'est ici (et seulement ici,
+  # tests et builds passés) que le tag est créé, sur le commit du run.
+  release:
+    name: Publish
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nomad-*
+          path: dist
+          merge-multiple: true
+
       - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
+          tag_name: ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*
           fail_on_unmatched_files: true
+          generate_release_notes: true
