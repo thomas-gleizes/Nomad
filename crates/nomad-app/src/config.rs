@@ -63,10 +63,19 @@ impl Default for Config {
     }
 }
 
-/// Nom de machine, via la variable d'environnement usuelle (suffisant pour un nom par défaut).
+/// Nom de machine : variables d'environnement usuelles, puis la commande
+/// `hostname` (les variables sont rarement exportées, notamment sous macOS).
 fn hostname() -> Option<String> {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
 }

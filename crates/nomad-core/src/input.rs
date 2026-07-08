@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Boutons de souris.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Button {
     Left,
     Right,
@@ -20,7 +20,7 @@ pub enum Button {
 /// est transportée via [`Key::Raw`] (scancode brut de la plateforme source), ce
 /// qui permet une dégradation gracieuse même si la correspondance symbolique
 /// n'est pas connue des deux côtés.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Key {
     // Lettres
     A, B, C, D, E, F, G, H, I, J, K, L, M,

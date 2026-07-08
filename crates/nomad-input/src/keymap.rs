@@ -84,12 +84,78 @@ fn rdev_key_fallback_code(k: rdev::Key) -> u32 {
     0x8000_0000 | (h & 0x7FFF_FFFF)
 }
 
+/// Keycode virtuel **positionnel** de la plateforme cible, quand il existe.
+///
+/// Injecter la position de la touche (plutôt que son caractère US via
+/// `Unicode`) laisse la disposition clavier du client s'appliquer (AZERTY,
+/// etc.) et rend les raccourcis Cmd/Ctrl+lettre fiables.
+#[cfg(target_os = "macos")]
+fn positional_code(k: Key) -> Option<u32> {
+    // Codes virtuels kVK_ANSI_* (HIToolbox/Events.h) — indépendants de la
+    // disposition, c'est le layout du client qui décide du caractère produit.
+    let code = match k {
+        Key::A => 0x00, Key::S => 0x01, Key::D => 0x02, Key::F => 0x03,
+        Key::H => 0x04, Key::G => 0x05, Key::Z => 0x06, Key::X => 0x07,
+        Key::C => 0x08, Key::V => 0x09, Key::B => 0x0B, Key::Q => 0x0C,
+        Key::W => 0x0D, Key::E => 0x0E, Key::R => 0x0F, Key::Y => 0x10,
+        Key::T => 0x11,
+        Key::Num1 => 0x12, Key::Num2 => 0x13, Key::Num3 => 0x14,
+        Key::Num4 => 0x15, Key::Num6 => 0x16, Key::Num5 => 0x17,
+        Key::Equal => 0x18, Key::Num9 => 0x19, Key::Num7 => 0x1A,
+        Key::Minus => 0x1B, Key::Num8 => 0x1C, Key::Num0 => 0x1D,
+        Key::RightBracket => 0x1E, Key::O => 0x1F, Key::U => 0x20,
+        Key::LeftBracket => 0x21, Key::I => 0x22, Key::P => 0x23,
+        Key::L => 0x25, Key::J => 0x26, Key::Quote => 0x27,
+        Key::K => 0x28, Key::SemiColon => 0x29, Key::BackSlash => 0x2A,
+        Key::Comma => 0x2B, Key::Slash => 0x2C, Key::N => 0x2D,
+        Key::M => 0x2E, Key::Dot => 0x2F, Key::BackQuote => 0x32,
+        _ => return None,
+    };
+    Some(code)
+}
+
+/// Codes `VK_*` Windows (la disposition du client s'applique aux lettres).
+#[cfg(target_os = "windows")]
+fn positional_code(k: Key) -> Option<u32> {
+    let code = match k {
+        Key::A => 0x41, Key::B => 0x42, Key::C => 0x43, Key::D => 0x44,
+        Key::E => 0x45, Key::F => 0x46, Key::G => 0x47, Key::H => 0x48,
+        Key::I => 0x49, Key::J => 0x4A, Key::K => 0x4B, Key::L => 0x4C,
+        Key::M => 0x4D, Key::N => 0x4E, Key::O => 0x4F, Key::P => 0x50,
+        Key::Q => 0x51, Key::R => 0x52, Key::S => 0x53, Key::T => 0x54,
+        Key::U => 0x55, Key::V => 0x56, Key::W => 0x57, Key::X => 0x58,
+        Key::Y => 0x59, Key::Z => 0x5A,
+        Key::Num0 => 0x30, Key::Num1 => 0x31, Key::Num2 => 0x32,
+        Key::Num3 => 0x33, Key::Num4 => 0x34, Key::Num5 => 0x35,
+        Key::Num6 => 0x36, Key::Num7 => 0x37, Key::Num8 => 0x38,
+        Key::Num9 => 0x39,
+        Key::Minus => 0xBD, Key::Equal => 0xBB,          // VK_OEM_MINUS / VK_OEM_PLUS
+        Key::LeftBracket => 0xDB, Key::RightBracket => 0xDD, // VK_OEM_4 / VK_OEM_6
+        Key::BackSlash => 0xDC, Key::SemiColon => 0xBA,  // VK_OEM_5 / VK_OEM_1
+        Key::Quote => 0xDE, Key::BackQuote => 0xC0,      // VK_OEM_7 / VK_OEM_3
+        Key::Comma => 0xBC, Key::Dot => 0xBE, Key::Slash => 0xBF,
+        _ => return None,
+    };
+    Some(code)
+}
+
+/// Linux : enigo attend un *keysym* (symbolique) pour `Key::Other`, pas un
+/// keycode positionnel — on garde l'injection Unicode.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn positional_code(_k: Key) -> Option<u32> {
+    None
+}
+
 /// Convertit une touche portable en touche enigo injectable.
 ///
-/// Les lettres/chiffres passent par `Unicode` (combinés aux modificateurs
-/// transmis séparément). `None` si la touche n'est pas injectable (`Raw`).
+/// Quand la plateforme le permet (macOS, Windows), lettres/chiffres/ponctuation
+/// sont injectés par keycode virtuel positionnel ; sinon repli `Unicode`
+/// (caractère US). `None` si la touche n'est pas injectable (`Raw`).
 pub fn to_enigo_key(k: Key) -> Option<enigo::Key> {
     use enigo::Key as E;
+    if let Some(code) = positional_code(k) {
+        return Some(E::Other(code));
+    }
     let key = match k {
         Key::A => E::Unicode('a'), Key::B => E::Unicode('b'), Key::C => E::Unicode('c'),
         Key::D => E::Unicode('d'), Key::E => E::Unicode('e'), Key::F => E::Unicode('f'),

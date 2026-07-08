@@ -10,6 +10,7 @@
 mod config;
 mod edge;
 mod inject_thread;
+mod motion;
 mod orchestrator;
 
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use nomad_core::layout::Screen;
-use nomad_core::Os;
+use nomad_core::{Button, Key, Os};
 use nomad_input::Captured;
 use nomad_net::{Endpoint, Identity};
 use tracing::{error, info};
@@ -139,10 +140,37 @@ fn main() -> anyhow::Result<()> {
             // suppression locale : on supprime clavier/boutons/molette tant qu'on
             // contrôle un client, mais on laisse passer les mouvements souris
             // (nécessaires pour continuer à produire des deltas via le recentrage).
+            //
+            // Un relâchement n'est supprimé que si son appui l'a été : une touche
+            // appuyée avant la transition doit être relâchée localement (et
+            // inversement), sinon elle reste coincée d'un côté.
             let grab_flag = grabbing.clone();
+            let suppressed_keys = std::sync::Mutex::new(std::collections::HashSet::<Key>::new());
+            let suppressed_buttons = std::sync::Mutex::new(std::collections::HashSet::<Button>::new());
             nomad_input::capture::grab(move |captured| {
-                let suppress = grab_flag.load(Ordering::Relaxed)
-                    && !matches!(captured, Captured::MouseMoveAbs { .. });
+                let grabbing = grab_flag.load(Ordering::Relaxed);
+                let suppress = match captured {
+                    Captured::MouseMoveAbs { .. } => false,
+                    Captured::MouseWheel { .. } => grabbing,
+                    Captured::Key { key, pressed: true } => {
+                        if grabbing {
+                            suppressed_keys.lock().unwrap().insert(key);
+                        }
+                        grabbing
+                    }
+                    Captured::Key { key, pressed: false } => {
+                        suppressed_keys.lock().unwrap().remove(&key)
+                    }
+                    Captured::MouseButton { button, pressed: true } => {
+                        if grabbing {
+                            suppressed_buttons.lock().unwrap().insert(button);
+                        }
+                        grabbing
+                    }
+                    Captured::MouseButton { button, pressed: false } => {
+                        suppressed_buttons.lock().unwrap().remove(&button)
+                    }
+                };
                 let _ = cap_tx.send(captured);
                 suppress
             })?;
