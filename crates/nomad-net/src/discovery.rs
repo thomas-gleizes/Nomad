@@ -24,11 +24,13 @@ pub struct DiscoveredServer {
     pub node_id: Option<NodeId>,
 }
 
-/// Parcourt le LAN pendant `timeout` et retourne le premier serveur résolu.
+/// Parcourt le LAN pendant `timeout` et retourne le premier serveur résolu
+/// qui n'est pas `self_id` (une annonce périmée de soi-même peut subsister
+/// dans les caches mDNS après un redémarrage).
 ///
 /// Bloquant (utilise le daemon mDNS sur un thread interne) : à appeler depuis
 /// `tokio::task::spawn_blocking`.
-pub fn browse_once(timeout: Duration) -> anyhow::Result<Option<DiscoveredServer>> {
+pub fn browse_once(timeout: Duration, self_id: NodeId) -> anyhow::Result<Option<DiscoveredServer>> {
     let daemon = ServiceDaemon::new()?;
     let receiver = daemon.browse(SERVICE_TYPE)?;
     let deadline = Instant::now() + timeout;
@@ -40,8 +42,12 @@ pub fn browse_once(timeout: Duration) -> anyhow::Result<Option<DiscoveredServer>
         }
         match receiver.recv_timeout(remaining) {
             Ok(ServiceEvent::ServiceResolved(info)) => {
-                if let Some(server) = resolve(&info) {
-                    break Some(server);
+                match resolve(&info) {
+                    Some(server) if server.node_id == Some(self_id) => {
+                        debug!("annonce mDNS de soi-même ignorée");
+                    }
+                    Some(server) => break Some(server),
+                    None => {}
                 }
             }
             Ok(other) => debug!(?other, "événement mDNS ignoré"),

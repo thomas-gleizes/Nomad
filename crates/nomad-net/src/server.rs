@@ -144,7 +144,7 @@ async fn handle_conn(
     };
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
-    conns.lock().unwrap().insert(node, out_tx);
+    conns.lock().unwrap().insert(node, out_tx.clone());
     let _ = ev_tx.send(ServerEvent::Joined {
         node,
         name,
@@ -173,8 +173,21 @@ async fn handle_conn(
         }
     };
 
-    conns.lock().unwrap().remove(&node);
-    let _ = ev_tx.send(ServerEvent::Left { node });
+    // Ne retire l'entrée (et n'émet `Left`) que si elle correspond encore à
+    // CETTE connexion : si le nœud s'est reconnecté entre-temps, la nouvelle
+    // connexion a remplacé la nôtre et ne doit pas être éjectée.
+    let removed = {
+        let mut map = conns.lock().unwrap();
+        if map.get(&node).is_some_and(|tx| tx.same_channel(&out_tx)) {
+            map.remove(&node);
+            true
+        } else {
+            false
+        }
+    };
+    if removed {
+        let _ = ev_tx.send(ServerEvent::Left { node });
+    }
     writer.abort();
     result
 }

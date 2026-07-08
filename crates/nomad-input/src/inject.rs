@@ -28,8 +28,9 @@ impl Injector {
                     .move_mouse(dx.round() as i32, dy.round() as i32, Coordinate::Rel)?;
             }
             InputEvent::MouseAbs { rx, ry } => {
-                let x = (rx.clamp(0.0, 1.0) * self.screen.width as f64).round() as i32;
-                let y = (ry.clamp(0.0, 1.0) * self.screen.height as f64).round() as i32;
+                // Coordonnées valides : 0..=width-1.
+                let x = (rx.clamp(0.0, 1.0) * self.screen.width.saturating_sub(1) as f64).round() as i32;
+                let y = (ry.clamp(0.0, 1.0) * self.screen.height.saturating_sub(1) as f64).round() as i32;
                 self.enigo.move_mouse(x, y, Coordinate::Abs)?;
             }
             InputEvent::MouseButton { button, pressed } => {

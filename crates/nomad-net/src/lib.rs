@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use nomad_core::layout::Screen;
 use nomad_core::{Message, NodeId, Os};
-use tracing::info;
+use tracing::{info, warn};
 
 pub use client::ClientHandle;
 pub use server::{ServerEvent, ServerHandle};
@@ -70,13 +70,22 @@ pub enum Endpoint {
 pub async fn start(identity: Identity, cfg: Config) -> anyhow::Result<Endpoint> {
     if !cfg.force_server {
         let timeout = cfg.discovery_timeout;
-        let found = tokio::task::spawn_blocking(move || discovery::browse_once(timeout)).await??;
+        let self_id = identity.id;
+        let found =
+            tokio::task::spawn_blocking(move || discovery::browse_once(timeout, self_id)).await??;
         if let Some(server) = found {
             info!(addr = %server.addr, server_id = ?server.node_id, "serveur trouvé → rôle client");
-            let client = client::connect(server.addr, identity.hello()).await?;
-            return Ok(Endpoint::Client(client));
+            // Une annonce peut être périmée (serveur disparu) : l'échec de
+            // connexion n'est pas fatal, on se promeut serveur.
+            match client::connect(server.addr, identity.hello()).await {
+                Ok(client) => return Ok(Endpoint::Client(client)),
+                Err(e) => {
+                    warn!(error = %e, "connexion au serveur découvert impossible → auto-promotion en serveur");
+                }
+            }
+        } else {
+            info!("aucun serveur trouvé → auto-promotion en serveur");
         }
-        info!("aucun serveur trouvé → auto-promotion en serveur");
     } else {
         info!("rôle serveur forcé");
     }
