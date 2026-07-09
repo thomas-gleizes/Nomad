@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use nomad_clip::ClipCmd;
 use nomad_core::layout::{Layout, NodeInfo, Screen};
+use nomad_core::status::{PeerInfo, SharedStatus};
 use nomad_core::{Button, InputEvent, Key, Message, NodeId};
 use nomad_input::Captured;
 use nomad_net::{ClientHandle, Identity, ServerEvent, ServerHandle};
@@ -54,6 +55,7 @@ struct Server {
     grabbing: Arc<AtomicBool>,
     inject_tx: StdSender<InjectCmd>,
     clip_cmd_tx: StdSender<ClipCmd>,
+    status: SharedStatus,
 }
 
 /// Boucle d'orchestration côté **serveur / contrôleur**.
@@ -65,6 +67,7 @@ pub async fn run_server(
     clip_cmd_tx: StdSender<ClipCmd>,
     mut clip_change_rx: UnboundedReceiver<String>,
     grabbing: Arc<AtomicBool>,
+    status: SharedStatus,
 ) {
     let self_id = identity.id;
     let screen = identity.screen;
@@ -89,6 +92,7 @@ pub async fn run_server(
         grabbing,
         inject_tx,
         clip_cmd_tx,
+        status,
     };
 
     loop {
@@ -116,6 +120,7 @@ impl Server {
                 self.ctrl.set_layout(layout.clone());
                 self.srv.send_to(node, Message::Welcome { layout: layout.clone() });
                 self.srv.broadcast(Message::LayoutUpdate { layout });
+                self.sync_status_peers();
             }
             ServerEvent::Left { node } => {
                 info!(%node, "client déconnecté");
@@ -132,6 +137,10 @@ impl Server {
                     let _ = self.inject_tx.send(InjectCmd::Warp(self.center.0, self.center.1));
                 }
                 self.srv.broadcast(Message::LayoutUpdate { layout });
+                self.sync_status_peers();
+                if was_active {
+                    self.sync_status_active();
+                }
             }
             ServerEvent::Message { from, msg } => match msg {
                 Message::Clipboard { text } => {
@@ -230,6 +239,7 @@ impl Server {
             let now_remote = after != self.self_id;
             self.grabbing.store(now_remote, Ordering::Relaxed);
             self.tracker.reset();
+            self.sync_status_active();
 
             match (now_remote, out.entry) {
                 (true, Some((rx, ry))) => {
@@ -262,6 +272,25 @@ impl Server {
         }
     }
 
+    /// Recopie la liste des pairs (tous les nœuds hors soi-même) dans l'état
+    /// partagé lu par l'UI.
+    fn sync_status_peers(&self) {
+        let peers: Vec<PeerInfo> = self
+            .nodes
+            .iter()
+            .filter(|n| n.id != self.self_id)
+            .map(|n| PeerInfo { id: n.id, name: n.name.clone() })
+            .collect();
+        self.status.update(|st| st.peers = peers.clone());
+    }
+
+    /// Recopie le nœud actif (`None` si local) dans l'état partagé.
+    fn sync_status_active(&self) {
+        let active = self.ctrl.active();
+        let active = (active != self.self_id).then_some(active);
+        self.status.update(|st| st.active = active);
+    }
+
     /// Envoie à `node` le relâchement de toutes les touches/boutons transmis
     /// encore appuyés, puis oublie cet état.
     fn release_held(&mut self, node: NodeId) {
@@ -282,6 +311,8 @@ pub async fn run_client(
     clip_cmd_tx: StdSender<ClipCmd>,
     mut clip_change_rx: UnboundedReceiver<String>,
     screen: Screen,
+    self_id: NodeId,
+    status: SharedStatus,
 ) {
     loop {
         tokio::select! {
@@ -299,15 +330,27 @@ pub async fn run_client(
                         let x = (rx * screen.width.saturating_sub(1) as f64).round() as i32;
                         let y = (ry * screen.height.saturating_sub(1) as f64).round() as i32;
                         let _ = inject_tx.send(InjectCmd::Warp(x, y));
+                        // On est désormais contrôlé à distance.
+                        status.update(|st| st.active = Some(self_id));
                     }
                     Message::Clipboard { text } => {
                         let _ = clip_cmd_tx.send(ClipCmd::SetText(text));
                     }
                     Message::Welcome { layout } | Message::LayoutUpdate { layout } => {
                         debug!(nodes = layout.nodes.len(), "disposition reçue");
+                        let peers: Vec<PeerInfo> = layout
+                            .nodes
+                            .iter()
+                            .filter(|n| n.id != self_id)
+                            .map(|n| PeerInfo { id: n.id, name: n.name.clone() })
+                            .collect();
+                        status.update(|st| st.peers = peers.clone());
                     }
                     Message::Ping => cli.send(Message::Pong),
-                    Message::LeaveScreen => {}
+                    Message::LeaveScreen => {
+                        // Le contrôle distant nous quitte.
+                        status.update(|st| st.active = None);
+                    }
                     other => debug!(?other, "message serveur ignoré"),
                 }
             }

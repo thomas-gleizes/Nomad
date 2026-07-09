@@ -18,35 +18,39 @@ cargo test -p nomad-app edge     # a single test module by name filter
 RUST_LOG=debug cargo run -- --server   # run with verbose logs, forced server role
 ```
 
-CLI flags: `--server` (force role), `--name`, `--port` (default 47800), `--discovery-secs`, `--clip-poll-ms`, `--config`. Node identity (stable UUID) + prefs persist in `~/.config/nomad/config.toml`.
+CLI flags: `--server` (force role), `--name`, `--port` (default 47800), `--discovery-secs`, `--clip-poll-ms`, `--config`, `--headless` (no tray UI). Node identity (stable UUID) + prefs persist in `~/.config/nomad/config.toml`.
+
+On macOS/Windows a native **tray / menu-bar icon** (crate `nomad-ui`) shows role, name, screen, connected peers and the active screen, with actions (rename, force server, reconnect, quit). It is disabled with `--headless` and is a no-op on Linux (headless).
 
 ## Architecture
 
-Cargo workspace, 5 crates ordered pure → OS-dependent. The key design principle: **all OS-sensitive code (`rdev`, `enigo`, `arboard`) is isolated behind portable vocabulary types from `nomad-core`, so orchestration and edge logic stay pure and unit-testable.**
+Cargo workspace, 6 crates ordered pure → OS-dependent. The key design principle: **all OS-sensitive code (`rdev`, `enigo`, `arboard`, tray UI) is isolated behind portable vocabulary types from `nomad-core`, so orchestration and edge logic stay pure and unit-testable.**
 
 | Crate | Role |
 |-------|------|
-| `nomad-core` | Pure, no tokio/no OS deps. Wire protocol (`Message`), portable input events (`InputEvent`, `Key`, `Button`), screen `Layout`/`Side`, and the length-prefixed bincode `codec`. |
+| `nomad-core` | Pure, no tokio/no OS deps. Wire protocol (`Message`), portable input events (`InputEvent`, `Key`, `Button`), screen `Layout`/`Side`, the length-prefixed bincode `codec`, and the shared UI state model (`status`: `AppStatus`, `SharedStatus`). |
 | `nomad-net` | mDNS discovery (`mdns-sd`), role election, star-topology TCP transport (tokio). Entry point `start()` returns `Endpoint::{Server,Client}`. |
 | `nomad-input` | Global capture (`rdev`) and injection (`enigo`) + rdev↔core↔enigo keymap. |
 | `nomad-clip` | Clipboard sync (`arboard`), single-threaded, with anti-echo. |
-| `nomad-app` | The `nomad` binary: CLI, TOML config, orchestration, edge-switching state machine. |
+| `nomad-ui` | Native tray / menu-bar UI (`tao` event loop + `tray-icon` + `muda`), **cfg-gated macOS + Windows** (no-op elsewhere). Read-only: polls `SharedStatus` (via a generation counter) and rebuilds the menu; user clicks return a `UiAction`. |
+| `nomad-app` | The `nomad` binary: CLI, TOML config, orchestration, edge-switching state machine, UI wiring. |
 
 ### Threading model (critical, drives the whole `main.rs` structure)
 
-`rdev` capture is a **blocking callback that must run on the main thread under macOS** (it needs a `CFRunLoop`). Therefore:
-- **main thread** = `rdev` capture (server role only);
+Both `rdev` capture and the native UI event loop are **blocking and want the main thread under macOS** (each needs a `CFRunLoop` / `NSApplication`). Only one can own it, so **the UI owns the main thread** and capture moves to a dedicated thread:
+- **main thread** = the `nomad-ui` tray event loop (`tao`), when the UI is enabled;
+- **`rdev` capture** (server role) runs on a dedicated `nomad-capture` thread — but **only when the UI is enabled**. In **headless** mode (`--headless`, or any non-macOS/Windows platform where the UI is a no-op) capture keeps the main thread, as before;
 - the **tokio runtime** (networking + orchestration) runs on its own threads;
 - **`enigo` injection** lives on a dedicated `nomad-inject` thread (owns the `Injector`);
 - **`arboard` clipboard** lives on a dedicated `nomad-clip` thread.
 
-These are wired together with channels (`std::sync::mpsc` for inject/clip commands, `tokio::sync::mpsc` for captured events and clipboard changes). When touching `main.rs` or the orchestrator, preserve this separation — moving capture or injection off its required thread breaks macOS silently.
+These are wired together with channels (`std::sync::mpsc` for inject/clip commands, `tokio::sync::mpsc` for captured events and clipboard changes) plus the lock-based `SharedStatus` for UI state. When touching `main.rs`, keep the invariant: **exactly one blocking main-thread owner** (UI when enabled, else capture). UI menu actions (rename / force-server / reconnect) are handled by a **clean process relaunch** (`relaunch()` in `main.rs`), not live reconfiguration.
 
 ### Control flow
 
 `nomad-app/src/orchestrator.rs` is the hub. `run_server` selects over: captured local input, server events (joins/leaves/messages), and local clipboard changes. `run_client` selects over incoming server messages and local clipboard changes, injecting received events.
 
-`nomad-app/src/edge.rs` (`EdgeController`) is the **pure, deterministic** edge-switching state machine — it returns `MoveOutcome` describing transitions; the orchestrator translates those into network messages and cursor warps. In remote-control mode, `nomad-app/src/motion.rs` (`MotionTracker`, also pure) turns captured absolute positions into deltas between **successive** positions; the real cursor is re-centered (`InjectCmd::Warp`) only when it strays from the center, and each warp's landing event is recognized (by target, with tolerance) and swallowed — never compute deltas against the center, warps are asynchronous. On return to local, the cursor is warped a few pixels **inside** the edge (`REENTRY_MARGIN`) so the landing event doesn't immediately re-trigger `local_move`. The bulk of unit tests live in `edge.rs` and `motion.rs`.
+`nomad-app/src/edge.rs` (`EdgeController`) is the **pure, deterministic** edge-switching state machine — it returns `MoveOutcome` describing transitions; the orchestrator translates those into network messages and cursor warps. It also tracks `exit_side` (the local edge the control left through). In remote-control mode, `nomad-app/src/motion.rs` (`MotionTracker`, also pure) turns captured absolute positions into deltas between **successive** positions; each warp's landing event is recognized (by target, with tolerance) and swallowed — never compute deltas against the anchor, warps are asynchronous. Instead of recentering, the real server cursor is **pinned to the exit edge** (`edge_anchor`, in retreat of `EDGE_INSET`) and **slides along it** to mirror the remote cursor's perpendicular position — it acts as a position indicator; it is only re-warped when it drifts past `ANCHOR_SLACK`. On return to local, the cursor is warped a few pixels **inside** the edge (`REENTRY_MARGIN`) so the landing event doesn't immediately re-trigger `local_move`. The bulk of unit tests live in `edge.rs` and `motion.rs`.
 
 Layout defaults to a horizontal left-to-right row in connection order (server leftmost); configurable TOML layout is not yet implemented.
 
@@ -61,4 +65,4 @@ Layout defaults to a horizontal left-to-right row in connection order (server le
 
 ## Known gaps (not implemented)
 
-Client auto-reconnect when the server drops, election collision handling, source-cursor hiding during remote control, file drag-and-drop transfer, TOML-configurable layout.
+Client auto-reconnect when the server drops, election collision handling, source-cursor hiding during remote control, file drag-and-drop transfer, TOML-configurable layout. **UI**: no Linux tray yet (headless there); menu actions relaunch the process rather than reconfiguring role/name live.

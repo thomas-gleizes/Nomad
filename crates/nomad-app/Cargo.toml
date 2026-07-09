@@ -13,6 +13,7 @@ nomad-core = { workspace = true }
 nomad-net = { workspace = true }
 nomad-input = { workspace = true }
 nomad-clip = { workspace = true }
+nomad-ui = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }

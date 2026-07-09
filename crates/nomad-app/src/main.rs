@@ -20,9 +20,11 @@ use std::time::Duration;
 
 use clap::Parser;
 use nomad_core::layout::Screen;
+use nomad_core::status::{AppStatus, Role, SharedStatus};
 use nomad_core::{Button, Key, Os};
 use nomad_input::Captured;
 use nomad_net::{Endpoint, Identity};
+use nomad_ui::UiAction;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -41,6 +43,9 @@ struct Cli {
     /// Forcer le rôle serveur (sans recherche préalable).
     #[arg(long)]
     server: bool,
+    /// Désactiver l'interface (icône de barre de menus) : mode headless.
+    #[arg(long)]
+    headless: bool,
     /// Durée de recherche d'un serveur, en secondes.
     #[arg(long, default_value_t = 2)]
     discovery_secs: u64,
@@ -118,6 +123,52 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
 
+    // État partagé lu par l'UI ; l'orchestrateur le met à jour.
+    let role = match &endpoint {
+        Endpoint::Server(_) => Role::Server,
+        Endpoint::Client(_) => Role::Client,
+    };
+    let status = SharedStatus::new(AppStatus::new(
+        role,
+        identity.id,
+        identity.name.clone(),
+        identity.os,
+        screen,
+    ));
+
+    // UI native seulement si la plateforme la supporte et qu'on n'est pas en headless.
+    let ui_enabled = nomad_ui::SUPPORTED && !cli.headless;
+
+    // Actions du menu : elles passent par une relance propre du process (réutilise
+    // tout le chemin de démarrage) plutôt qu'une reconfiguration réseau à chaud.
+    let on_action = {
+        let cfg = cfg.clone();
+        let config_path = config_path.clone();
+        let original_args: Vec<String> = std::env::args().skip(1).collect();
+        let base_args: Vec<String> = original_args
+            .iter()
+            .filter(|a| a.as_str() != "--server")
+            .cloned()
+            .collect();
+        move |action: UiAction| match action {
+            UiAction::Quit => std::process::exit(0),
+            UiAction::Reconnect => relaunch(&base_args),
+            UiAction::ForceServer => {
+                let mut a = base_args.clone();
+                a.push("--server".into());
+                relaunch(&a)
+            }
+            UiAction::Rename(name) => {
+                let mut c = cfg.clone();
+                c.name = name;
+                if let Err(e) = c.save(&config_path) {
+                    error!(error = %e, "sauvegarde du nom impossible");
+                }
+                relaunch(&original_args) // conserve le rôle courant
+            }
+        }
+    };
+
     match endpoint {
         Endpoint::Server(srv) => {
             info!("rôle SERVEUR (contrôleur) — capture clavier/souris locale");
@@ -134,61 +185,102 @@ fn main() -> anyhow::Result<()> {
                 clip_cmd_tx,
                 clip_change_rx,
                 grabbing.clone(),
+                status.clone(),
             ));
 
-            // Capture bloquante sur le thread principal. La fermeture décide de la
-            // suppression locale : on supprime clavier/boutons/molette tant qu'on
-            // contrôle un client, mais on laisse passer les mouvements souris
-            // (nécessaires pour continuer à produire des deltas via le recentrage).
+            // Capture globale bloquante. La fermeture décide de la suppression
+            // locale : on supprime clavier/boutons/molette tant qu'on contrôle un
+            // client, mais on laisse passer les mouvements souris (nécessaires pour
+            // continuer à produire des deltas via le recentrage).
             //
             // Un relâchement n'est supprimé que si son appui l'a été : une touche
             // appuyée avant la transition doit être relâchée localement (et
             // inversement), sinon elle reste coincée d'un côté.
             let grab_flag = grabbing.clone();
-            let suppressed_keys = std::sync::Mutex::new(std::collections::HashSet::<Key>::new());
-            let suppressed_buttons = std::sync::Mutex::new(std::collections::HashSet::<Button>::new());
-            nomad_input::capture::grab(move |captured| {
-                let grabbing = grab_flag.load(Ordering::Relaxed);
-                let suppress = match captured {
-                    Captured::MouseMoveAbs { .. } => false,
-                    Captured::MouseWheel { .. } => grabbing,
-                    Captured::Key { key, pressed: true } => {
-                        if grabbing {
-                            suppressed_keys.lock().unwrap().insert(key);
+            let capture = move || -> anyhow::Result<()> {
+                let suppressed_keys = std::sync::Mutex::new(std::collections::HashSet::<Key>::new());
+                let suppressed_buttons =
+                    std::sync::Mutex::new(std::collections::HashSet::<Button>::new());
+                nomad_input::capture::grab(move |captured| {
+                    let grabbing = grab_flag.load(Ordering::Relaxed);
+                    let suppress = match captured {
+                        Captured::MouseMoveAbs { .. } => false,
+                        Captured::MouseWheel { .. } => grabbing,
+                        Captured::Key { key, pressed: true } => {
+                            if grabbing {
+                                suppressed_keys.lock().unwrap().insert(key);
+                            }
+                            grabbing
                         }
-                        grabbing
-                    }
-                    Captured::Key { key, pressed: false } => {
-                        suppressed_keys.lock().unwrap().remove(&key)
-                    }
-                    Captured::MouseButton { button, pressed: true } => {
-                        if grabbing {
-                            suppressed_buttons.lock().unwrap().insert(button);
+                        Captured::Key { key, pressed: false } => {
+                            suppressed_keys.lock().unwrap().remove(&key)
                         }
-                        grabbing
-                    }
-                    Captured::MouseButton { button, pressed: false } => {
-                        suppressed_buttons.lock().unwrap().remove(&button)
-                    }
-                };
-                let _ = cap_tx.send(captured);
-                suppress
-            })?;
+                        Captured::MouseButton { button, pressed: true } => {
+                            if grabbing {
+                                suppressed_buttons.lock().unwrap().insert(button);
+                            }
+                            grabbing
+                        }
+                        Captured::MouseButton { button, pressed: false } => {
+                            suppressed_buttons.lock().unwrap().remove(&button)
+                        }
+                    };
+                    let _ = cap_tx.send(captured);
+                    suppress
+                })
+            };
+
+            if ui_enabled {
+                // L'UI possède le thread principal (requis macOS) ; la capture rdev
+                // déménage sur un thread dédié.
+                std::thread::Builder::new()
+                    .name("nomad-capture".into())
+                    .spawn(move || {
+                        if let Err(e) = capture() {
+                            error!(error = %e, "capture arrêtée");
+                        }
+                    })?;
+                nomad_ui::run(status, on_action)
+            } else {
+                // Headless : capture bloquante sur le thread principal (comportement
+                // d'origine).
+                capture()?;
+                Ok(())
+            }
         }
         Endpoint::Client(handle) => {
             info!("rôle CLIENT (écran) — injection des événements du serveur");
             print_permissions_hint();
-            rt.block_on(orchestrator::run_client(
+            let client = orchestrator::run_client(
                 handle,
                 inject_tx,
                 clip_cmd_tx,
                 clip_change_rx,
                 screen,
-            ));
+                identity.id,
+                status.clone(),
+            );
+            if ui_enabled {
+                rt.spawn(client);
+                nomad_ui::run(status, on_action)
+            } else {
+                rt.block_on(client);
+                Ok(())
+            }
         }
     }
+}
 
-    Ok(())
+/// Relance le binaire avec les arguments donnés, puis termine le process courant.
+/// Utilisé par les actions du menu (reconnecter / forcer serveur / renommer).
+fn relaunch(args: &[String]) -> ! {
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let _ = std::process::Command::new(exe).args(args).spawn();
+        }
+        Err(e) => error!(error = %e, "current_exe indisponible, relance impossible"),
+    }
+    std::process::exit(0);
 }
 
 /// Détecte la résolution de l'écran principal.

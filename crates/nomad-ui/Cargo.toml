@@ -1,0 +1,18 @@
+[package]
+name = "nomad-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomad-core = { workspace = true }
+tracing = { workspace = true }
+
+# UI native uniquement sur macOS et Windows ; ailleurs le crate se compile en
+# no-op (Linux tourne headless pour l'instant), pour garder un build propre sans
+# dépendances GTK/appindicator.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tao = { workspace = true }
+tray-icon = { workspace = true }
+tinyfiledialogs = { workspace = true }

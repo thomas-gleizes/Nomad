@@ -9,8 +9,10 @@ pub mod error;
 pub mod input;
 pub mod layout;
 pub mod protocol;
+pub mod status;
 
 pub use error::{Error, Result};
 pub use input::{Button, InputEvent, Key};
 pub use layout::{Layout, NodeInfo, Screen, Side};
 pub use protocol::{Message, NodeId, Os};
+pub use status::{AppStatus, PeerInfo, Role, SharedStatus};

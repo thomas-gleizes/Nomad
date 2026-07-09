@@ -5,6 +5,7 @@ members = [
     "crates/nomad-net",
     "crates/nomad-input",
     "crates/nomad-clip",
+    "crates/nomad-ui",
     "crates/nomad-app",
 ]
 
@@ -20,6 +21,7 @@ nomad-core = { path = "crates/nomad-core" }
 nomad-net = { path = "crates/nomad-net" }
 nomad-input = { path = "crates/nomad-input" }
 nomad-clip = { path = "crates/nomad-clip" }
+nomad-ui = { path = "crates/nomad-ui" }
 
 # Async runtime + networking
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
@@ -37,6 +39,11 @@ rdev = { version = "0.5", features = ["unstable_grab"] }
 enigo = "0.2"
 arboard = "3"
 display-info = "0.5"
+
+# UI native (barre de menus / systray) — macOS + Windows
+tao = "0.35"
+tray-icon = "0.24"
+tinyfiledialogs = "3"
 
 # Utils
 uuid = { version = "1", features = ["v4", "serde"] }
