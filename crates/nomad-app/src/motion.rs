@@ -13,6 +13,8 @@
 
 use std::collections::VecDeque;
 
+use nomad_core::layout::{Screen, Side};
+
 /// Nombre maximal de warps en attente d'atterrissage (au-delà, les plus
 /// anciens sont considérés perdus — coalescés par l'OS).
 const MAX_PENDING_WARPS: usize = 8;
@@ -84,6 +86,28 @@ pub fn entry_px(ratio: f64, extent: u32, margin: f64) -> i32 {
     (ratio * max).clamp(margin.min(max / 2.0), (max - margin).max(max / 2.0)).round() as i32
 }
 
+/// Position d'ancrage du curseur réel sur l'écran local, en mode distant.
+///
+/// Le curseur reste **collé au bord de sortie** (en retrait de `inset` px, pour
+/// garder une marge de mesure des deltas de retour) et **glisse le long de ce
+/// bord** en suivant la coordonnée perpendiculaire du curseur distant : la
+/// hauteur (`ry`) si la sortie est gauche/droite, la largeur (`rx`) si elle est
+/// haut/bas. Il devient ainsi un indicateur de position sur l'écran distant.
+pub fn edge_anchor(side: Side, rx: f64, ry: f64, screen: Screen, inset: f64) -> (i32, i32) {
+    let w = screen.width.saturating_sub(1) as f64;
+    let h = screen.height.saturating_sub(1) as f64;
+    let inset_x = inset.min(w / 2.0);
+    let inset_y = inset.min(h / 2.0);
+    let along_x = (rx.clamp(0.0, 1.0) * w).round() as i32;
+    let along_y = (ry.clamp(0.0, 1.0) * h).round() as i32;
+    match side {
+        Side::Right => ((w - inset_x).round() as i32, along_y),
+        Side::Left => (inset_x.round() as i32, along_y),
+        Side::Bottom => (along_x, (h - inset_y).round() as i32),
+        Side::Top => (along_x, inset_y.round() as i32),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +173,30 @@ mod tests {
         assert_eq!(entry_px(0.5, 1280, 8.0), 640);
         // Ratio hors bornes : clampé.
         assert_eq!(entry_px(1.5, 1280, 8.0), 1271);
+    }
+
+    #[test]
+    fn edge_anchor_sticks_to_exit_side_and_follows_perp() {
+        let s = Screen::new(1280, 720);
+        // Sortie par la droite : x collé au bord droit (en retrait), y suit ry.
+        assert_eq!(edge_anchor(Side::Right, 0.0, 0.0, s, 50.0), (1229, 0));
+        assert_eq!(edge_anchor(Side::Right, 0.0, 0.5, s, 50.0), (1229, 360));
+        assert_eq!(edge_anchor(Side::Right, 0.0, 1.0, s, 50.0), (1229, 719));
+        // Sortie par la gauche : x collé au bord gauche.
+        assert_eq!(edge_anchor(Side::Left, 0.0, 0.5, s, 50.0), (50, 360));
+        // Sortie par le bas : y collé au bord bas, x suit rx.
+        assert_eq!(edge_anchor(Side::Bottom, 0.5, 0.0, s, 50.0), (640, 669));
+        // Sortie par le haut : y collé au bord haut.
+        assert_eq!(edge_anchor(Side::Top, 1.0, 0.0, s, 50.0), (1279, 50));
+    }
+
+    #[test]
+    fn edge_anchor_clamps_inset_on_small_screen() {
+        let s = Screen::new(40, 40);
+        // inset 50 > 39/2 : clampé à ~19.5.
+        let (x, _) = edge_anchor(Side::Right, 0.0, 0.0, s, 50.0);
+        assert_eq!(x, 20); // 39 - 19.5 = 19.5 -> arrondi 20
+        let (x, _) = edge_anchor(Side::Left, 0.0, 0.0, s, 50.0);
+        assert_eq!(x, 20); // 19.5 -> 20
     }
 }

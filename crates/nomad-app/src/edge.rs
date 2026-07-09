@@ -38,6 +38,11 @@ pub struct EdgeController {
     /// Position du curseur virtuel, en pixels, dans l'espace de l'écran actif
     /// (significative uniquement quand `active != self_id`).
     virtual_pos: (f64, f64),
+    /// Bord de l'écran **local** par lequel le contrôle est parti en mode
+    /// distant (`None` en local). Stable pendant toute la session distante,
+    /// y compris lors des sauts distant→distant : le curseur réel du serveur
+    /// reste collé à ce bord pour indiquer la position sur l'écran distant.
+    exit_side: Option<Side>,
 }
 
 impl EdgeController {
@@ -48,6 +53,7 @@ impl EdgeController {
             layout,
             active: self_id,
             virtual_pos: (0.0, 0.0),
+            exit_side: None,
         }
     }
 
@@ -59,11 +65,17 @@ impl EdgeController {
         self.active == self.self_id
     }
 
+    /// Bord de l'écran local par lequel le contrôle est parti (`None` en local).
+    pub fn exit_side(&self) -> Option<Side> {
+        self.exit_side
+    }
+
     /// Remplace la disposition. Si le nœud actif disparaît, on revient en local.
     pub fn set_layout(&mut self, layout: Layout) {
         self.layout = layout;
         if self.active != self.self_id && self.layout.node(self.active).is_none() {
             self.active = self.self_id;
+            self.exit_side = None;
         }
     }
 
@@ -103,6 +115,7 @@ impl EdgeController {
         let (erx, ery) = Layout::entry_ratio(side, perp);
         let ns = self.screen_of(neighbor);
         self.active = neighbor;
+        self.exit_side = Some(side);
         self.virtual_pos = (erx * ns.width as f64, ery * ns.height as f64);
         MoveOutcome {
             entry: Some((erx, ery)),
@@ -158,6 +171,9 @@ impl EdgeController {
                 if next != self.self_id {
                     let ns = self.screen_of(next);
                     self.virtual_pos = (erx * ns.width as f64, ery * ns.height as f64);
+                } else {
+                    // Retour en local : plus de bord de sortie.
+                    self.exit_side = None;
                 }
                 MoveOutcome {
                     entry: Some((erx, ery)),
@@ -231,6 +247,29 @@ mod tests {
         assert_eq!(c.active(), s);
         assert!(c.is_local());
         assert_eq!(out.entry, Some((1.0, 0.5))); // rentre par le bord droit de S
+    }
+
+    #[test]
+    fn exit_side_tracks_departure_edge() {
+        let (mut c, _s, a, b) = setup();
+        assert_eq!(c.exit_side(), None); // local
+        c.local_move(99.0, 50.0); // sortie par la droite -> A
+        assert_eq!(c.active(), a);
+        assert_eq!(c.exit_side(), Some(Side::Right));
+        // Saut distant→distant A -> B : le bord de sortie local reste le même.
+        c.remote_advance(110.0, 0.0);
+        assert_eq!(c.active(), b);
+        assert_eq!(c.exit_side(), Some(Side::Right));
+    }
+
+    #[test]
+    fn exit_side_clears_on_return_local() {
+        let (mut c, _s, _a, _b) = setup();
+        c.local_move(99.0, 50.0); // -> A
+        assert_eq!(c.exit_side(), Some(Side::Right));
+        c.remote_advance(-60.0, 0.0); // franchit la gauche de A -> retour local
+        assert!(c.is_local());
+        assert_eq!(c.exit_side(), None);
     }
 
     #[test]

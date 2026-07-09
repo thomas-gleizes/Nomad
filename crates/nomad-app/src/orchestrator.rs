@@ -22,13 +22,21 @@ use tracing::{debug, info, warn};
 
 use crate::edge::{EdgeController, MoveOutcome};
 use crate::inject_thread::InjectCmd;
-use crate::motion::{entry_px, MotionTracker};
+use crate::motion::{edge_anchor, entry_px, MotionTracker};
 
 /// Marge (px) de ré-entrée sur l'écran local : hors de la zone de
 /// déclenchement des bords, sinon le retour rebondit aussitôt vers le distant.
 const REENTRY_MARGIN: f64 = 8.0;
 /// Tolérance (px) de reconnaissance de l'atterrissage d'un warp de recentrage.
 const WARP_TOLERANCE: f64 = 2.0;
+/// Retrait (px) du point d'ancrage par rapport au bord de sortie. Garde une
+/// marge suffisante pour que les mouvements de retour vers l'écran distant
+/// restent mesurables entre deux warps (les positions rdev sont clampées au bord).
+const EDGE_INSET: f64 = 50.0;
+/// Écart (px, par axe) entre la position capturée et l'ancre au-delà duquel on
+/// re-warpe le curseur réel sur le bord. Doit rester `> WARP_TOLERANCE` pour ne
+/// pas re-warper indéfiniment l'atterrissage d'un warp précédent.
+const ANCHOR_SLACK: f64 = 4.0;
 
 /// État de l'orchestrateur côté **serveur / contrôleur**.
 struct Server {
@@ -36,8 +44,6 @@ struct Server {
     self_id: NodeId,
     screen: Screen,
     center: (i32, i32),
-    /// Distance au centre au-delà de laquelle on recentre le curseur réel.
-    recenter_dist: f64,
     nodes: Vec<NodeInfo>,
     ctrl: EdgeController,
     tracker: MotionTracker,
@@ -75,7 +81,6 @@ pub async fn run_server(
         self_id,
         screen,
         center: ((screen.width / 2) as i32, (screen.height / 2) as i32),
-        recenter_dist: screen.width.min(screen.height) as f64 / 4.0,
         ctrl: EdgeController::new(self_id, screen, Layout::horizontal_row(nodes.clone())),
         nodes,
         tracker: MotionTracker::new(WARP_TOLERANCE),
@@ -151,14 +156,21 @@ impl Server {
                     let Some((dx, dy)) = self.tracker.delta(x, y) else {
                         return;
                     };
-                    // Recentre le curseur réel quand il s'éloigne trop, pour
-                    // garder de la marge avant les bords de l'écran serveur.
-                    let (cx, cy) = (self.center.0 as f64, self.center.1 as f64);
-                    if (x - cx).abs() > self.recenter_dist || (y - cy).abs() > self.recenter_dist {
-                        self.tracker.expect_warp(cx, cy);
-                        let _ = self.inject_tx.send(InjectCmd::Warp(self.center.0, self.center.1));
+                    let out = self.ctrl.remote_advance(dx, dy);
+                    // Garde le curseur réel collé au bord de sortie, glissant le
+                    // long de ce bord pour indiquer la position sur l'écran
+                    // distant. On re-warpe seulement s'il a dérivé de l'ancre
+                    // (sinon il suit déjà naturellement le mouvement). En cas de
+                    // transition, `apply_transition` fait le warp d'entrée.
+                    if let (Some((rx, ry)), Some(side)) = (out.remote_abs, self.ctrl.exit_side()) {
+                        let (ax, ay) = edge_anchor(side, rx, ry, self.screen, EDGE_INSET);
+                        if (x - ax as f64).abs() > ANCHOR_SLACK || (y - ay as f64).abs() > ANCHOR_SLACK
+                        {
+                            self.tracker.expect_warp(ax as f64, ay as f64);
+                            let _ = self.inject_tx.send(InjectCmd::Warp(ax, ay));
+                        }
                     }
-                    self.ctrl.remote_advance(dx, dy)
+                    out
                 };
                 let after = self.ctrl.active();
                 self.apply_transition(before, after, out);
@@ -222,10 +234,16 @@ impl Server {
             match (now_remote, out.entry) {
                 (true, Some((rx, ry))) => {
                     // On commence à contrôler un client : on l'informe (il
-                    // positionne son curseur) et on gare le curseur local au centre.
+                    // positionne son curseur) et on gare le curseur local collé
+                    // au bord de sortie, à la même hauteur/largeur, pour indiquer
+                    // la position sur l'écran distant.
                     self.srv.send_to(after, Message::EnterScreen { node: after, rx, ry });
-                    self.tracker.expect_warp(self.center.0 as f64, self.center.1 as f64);
-                    let _ = self.inject_tx.send(InjectCmd::Warp(self.center.0, self.center.1));
+                    let (ax, ay) = match self.ctrl.exit_side() {
+                        Some(side) => edge_anchor(side, rx, ry, self.screen, EDGE_INSET),
+                        None => self.center,
+                    };
+                    self.tracker.expect_warp(ax as f64, ay as f64);
+                    let _ = self.inject_tx.send(InjectCmd::Warp(ax, ay));
                     info!(%after, "contrôle transféré au client");
                 }
                 (false, Some((rx, ry))) => {
