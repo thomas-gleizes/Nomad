@@ -9,11 +9,14 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
+
 use crate::layout::Screen;
 use crate::protocol::{NodeId, Os};
 
 /// Rôle courant du nœud.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     Server,
     Client,
@@ -30,14 +33,17 @@ impl Role {
 }
 
 /// Un pair connu de la disposition (hors soi-même).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub id: NodeId,
     pub name: String,
 }
 
 /// Instantané de l'état applicatif présentable à l'utilisateur.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Sérialisable tel quel : c'est le payload `status` exposé par l'API de
+/// contrôle IPC (`nomad-ipc`) et consommé par les coquilles natives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppStatus {
     pub role: Role,
     pub self_id: NodeId,

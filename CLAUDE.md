@@ -18,22 +18,23 @@ cargo test -p nomad-app edge     # a single test module by name filter
 RUST_LOG=debug cargo run -- --server   # run with verbose logs, forced server role
 ```
 
-CLI flags: `--server` (force role), `--name`, `--port` (default 47800), `--discovery-secs`, `--clip-poll-ms`, `--config`, `--headless` (no tray UI). Node identity (stable UUID) + prefs persist in `~/.config/nomad/config.toml`.
+CLI flags: `--server` (force role), `--name`, `--port` (default 47800), `--discovery-secs`, `--clip-poll-ms`, `--config`, `--headless` (no tray UI), `--ipc-socket <path>` (control-API socket, default: next to the config), `--no-ipc` (disable it). Node identity (stable UUID) + prefs persist in `~/.config/nomad/config.toml`. A second instance exits immediately (code 3) when a daemon already answers on the same IPC socket (single-instance guard).
 
 On macOS/Windows a native **tray / menu-bar icon** (crate `nomad-ui`) shows role, name, screen, connected peers and the active screen, with actions (rename, force server, reconnect, quit). It is disabled with `--headless` and is a no-op on Linux (headless).
 
 ## Architecture
 
-Cargo workspace, 6 crates ordered pure → OS-dependent. The key design principle: **all OS-sensitive code (`rdev`, `enigo`, `arboard`, tray UI) is isolated behind portable vocabulary types from `nomad-core`, so orchestration and edge logic stay pure and unit-testable.**
+Cargo workspace, 7 crates ordered pure → OS-dependent. The key design principle: **all OS-sensitive code (`rdev`, `enigo`, `arboard`, tray UI) is isolated behind portable vocabulary types from `nomad-core`, so orchestration and edge logic stay pure and unit-testable.**
 
 | Crate | Role |
 |-------|------|
-| `nomad-core` | Pure, no tokio/no OS deps. Wire protocol (`Message`), portable input events (`InputEvent`, `Key`, `Button`), screen `Layout`/`Side`, the length-prefixed bincode `codec`, and the shared UI state model (`status`: `AppStatus`, `SharedStatus`). |
+| `nomad-core` | Pure, no tokio/no OS deps. Wire protocol (`Message`), portable input events (`InputEvent`, `Key`, `Button`), screen `Layout`/`Side`, the length-prefixed bincode `codec`, and the shared UI state model (`status`: `AppStatus`, `SharedStatus`; `AppStatus`/`Role`/`PeerInfo` are `serde`-serializable — they double as the IPC `status` payload). |
 | `nomad-net` | mDNS discovery (`mdns-sd`), role election, star-topology TCP transport (tokio). Entry point `start()` returns `Endpoint::{Server,Client}`. |
 | `nomad-input` | Global capture (`rdev`) and injection (`enigo`) + rdev↔core↔enigo keymap. |
 | `nomad-clip` | Clipboard sync (`arboard`), single-threaded, with anti-echo. |
 | `nomad-ui` | Native tray / menu-bar UI (`tao` event loop + `tray-icon` + `muda`), **cfg-gated macOS + Windows** (no-op elsewhere). Read-only: polls `SharedStatus` (via a generation counter) and rebuilds the menu; user clicks return a `UiAction`. |
-| `nomad-app` | The `nomad` binary: CLI, TOML config, orchestration, edge-switching state machine, UI wiring. |
+| `nomad-ipc` | Local **control API** over a Unix socket (JSON-lines, versioned). Read-only over `SharedStatus`: exposes `status`, streams changes on `subscribe`, relays commands (rename / force-server / reconnect / quit) to a `DaemonAction` callback. Single-instance guard via connect-probe in `bind`. cfg-gated `unix` (no-op stub elsewhere). This is the foundation for native shells (macOS app, later Windows). Dev tool: `cargo run -p nomad-ipc --example ipcctl -- status`. |
+| `nomad-app` | The `nomad` binary: CLI, TOML config, orchestration, edge-switching state machine, UI + IPC wiring. |
 
 ### Threading model (critical, drives the whole `main.rs` structure)
 
@@ -45,6 +46,8 @@ Both `rdev` capture and the native UI event loop are **blocking and want the mai
 - **`arboard` clipboard** lives on a dedicated `nomad-clip` thread.
 
 These are wired together with channels (`std::sync::mpsc` for inject/clip commands, `tokio::sync::mpsc` for captured events and clipboard changes) plus the lock-based `SharedStatus` for UI state. When touching `main.rs`, keep the invariant: **exactly one blocking main-thread owner** (UI when enabled, else capture). UI menu actions (rename / force-server / reconnect) are handled by a **clean process relaunch** (`relaunch()` in `main.rs`), not live reconfiguration.
+
+The **control API** (`nomad-ipc`) runs entirely inside the tokio runtime, so it never contends for the main thread. Both the tray and the IPC server drive the same cloneable `ActionHandler` (in `main.rs`) → same relaunch/exit paths. Two ordering points matter: the IPC socket is `bind`-ed **before** the blocking mDNS discovery (fail fast on a second instance), and `serve` is **spawned before** discovery too — so the API answers immediately. `SharedStatus` is therefore created up front with a *provisional* role (`--server` ⇒ Server, else Client) and corrected right after election.
 
 ### Control flow
 

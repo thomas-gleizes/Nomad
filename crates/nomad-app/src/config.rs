@@ -31,6 +31,13 @@ impl Config {
             .map(|d| d.config_dir().join("config.toml"))
     }
 
+    /// Chemin par défaut du socket de l'API de contrôle, co-localisé avec la
+    /// configuration.
+    pub fn default_socket_path() -> Option<PathBuf> {
+        ProjectDirs::from("dev", "nomad", "nomad")
+            .map(|d| d.config_dir().join("nomad.sock"))
+    }
+
     /// Charge la config depuis `path`, ou en crée une par défaut (et la sauvegarde).
     pub fn load_or_create(path: &Path) -> anyhow::Result<Config> {
         if path.exists() {

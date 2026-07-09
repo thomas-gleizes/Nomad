@@ -13,7 +13,7 @@ mod inject_thread;
 mod motion;
 mod orchestrator;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,9 +23,10 @@ use nomad_core::layout::Screen;
 use nomad_core::status::{AppStatus, Role, SharedStatus};
 use nomad_core::{Button, Key, Os};
 use nomad_input::Captured;
+use nomad_ipc::DaemonAction;
 use nomad_net::{Endpoint, Identity};
 use nomad_ui::UiAction;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -55,6 +56,70 @@ struct Cli {
     /// Chemin du fichier de configuration.
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Chemin du socket de l'API de contrôle (par défaut : à côté de la config).
+    #[arg(long)]
+    ipc_socket: Option<PathBuf>,
+    /// Désactiver l'API de contrôle locale (socket IPC).
+    #[arg(long)]
+    no_ipc: bool,
+}
+
+/// Exécute les actions de contrôle, quelle qu'en soit la source (menu du tray
+/// ou API IPC). Toutes passent par une relance propre du process — réutilisant
+/// tout le chemin de démarrage — plutôt qu'une reconfiguration à chaud.
+///
+/// Clonable et `Send + Sync` : une copie va au tray (thread principal), une
+/// autre au serveur IPC (runtime tokio).
+#[derive(Clone)]
+struct ActionHandler {
+    cfg: Config,
+    config_path: PathBuf,
+    /// Arguments de lancement d'origine (conservent le rôle courant).
+    original_args: Vec<String>,
+    /// Arguments d'origine privés de `--server` (pour re-décider du rôle).
+    base_args: Vec<String>,
+}
+
+impl ActionHandler {
+    fn new(cfg: Config, config_path: PathBuf) -> Self {
+        let original_args: Vec<String> = std::env::args().skip(1).collect();
+        let base_args = original_args
+            .iter()
+            .filter(|a| a.as_str() != "--server")
+            .cloned()
+            .collect();
+        Self { cfg, config_path, original_args, base_args }
+    }
+
+    fn handle(&self, action: DaemonAction) {
+        match action {
+            DaemonAction::Quit => std::process::exit(0),
+            DaemonAction::Reconnect => relaunch(&self.base_args),
+            DaemonAction::ForceServer => {
+                let mut a = self.base_args.clone();
+                a.push("--server".into());
+                relaunch(&a)
+            }
+            DaemonAction::Rename(name) => {
+                let mut c = self.cfg.clone();
+                c.name = name;
+                if let Err(e) = c.save(&self.config_path) {
+                    error!(error = %e, "sauvegarde du nom impossible");
+                }
+                relaunch(&self.original_args) // conserve le rôle courant
+            }
+        }
+    }
+}
+
+/// Traduit une action du menu tray vers l'action de contrôle unifiée.
+fn ui_to_daemon(action: UiAction) -> DaemonAction {
+    match action {
+        UiAction::Quit => DaemonAction::Quit,
+        UiAction::Reconnect => DaemonAction::Reconnect,
+        UiAction::ForceServer => DaemonAction::ForceServer,
+        UiAction::Rename(name) => DaemonAction::Rename(name),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -91,6 +156,57 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
 
+    // Handler d'actions partagé entre le tray et l'API IPC.
+    let handler = ActionHandler::new(cfg.clone(), config_path.clone());
+
+    // API de contrôle IPC : liée **tôt** (avant réseau/capture) afin de détecter
+    // une instance déjà en cours et de sortir proprement. Le serveur lui-même est
+    // démarré plus bas, une fois l'état partagé construit.
+    let ipc_enabled = nomad_ipc::SUPPORTED && !cli.no_ipc;
+    let ipc_listener = if ipc_enabled {
+        let path = resolve_ipc_socket(&cli, &config_path);
+        match rt.block_on(nomad_ipc::bind(&path)) {
+            Ok(listener) => {
+                info!(socket = %path.display(), "API de contrôle IPC liée");
+                Some(listener)
+            }
+            Err(nomad_ipc::BindError::AlreadyRunning) => {
+                eprintln!(
+                    "nomad est déjà en cours d'exécution (socket {}). Une seule instance à la fois.",
+                    path.display()
+                );
+                std::process::exit(3);
+            }
+            Err(e) => {
+                warn!(error = %e, "API de contrôle IPC indisponible, poursuite sans");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // État partagé lu par l'UI et l'API IPC. Construit **avant** la découverte
+    // (bloquante) avec un rôle provisoire, pour que l'API de contrôle réponde
+    // immédiatement — en particulier à la sonde d'instance unique d'un second
+    // process. Le rôle réel est corrigé juste après l'élection.
+    let provisional_role = if cli.server { Role::Server } else { Role::Client };
+    let status = SharedStatus::new(AppStatus::new(
+        provisional_role,
+        identity.id,
+        identity.name.clone(),
+        identity.os,
+        screen,
+    ));
+
+    // Démarre le serveur de l'API de contrôle sur le socket déjà lié. Disponible
+    // dans les deux rôles et en headless.
+    if let Some(listener) = ipc_listener {
+        let status = status.clone();
+        let handler = handler.clone();
+        rt.spawn(nomad_ipc::serve(listener, status, move |action| handler.handle(action)));
+    }
+
     let net_cfg = nomad_net::Config {
         port: cfg.port,
         discovery_timeout: Duration::from_secs(cli.discovery_secs),
@@ -123,50 +239,21 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
 
-    // État partagé lu par l'UI ; l'orchestrateur le met à jour.
+    // Corrige le rôle provisoire une fois l'élection faite ; l'orchestrateur
+    // continue ensuite de mettre à jour l'état (pairs, écran actif).
     let role = match &endpoint {
         Endpoint::Server(_) => Role::Server,
         Endpoint::Client(_) => Role::Client,
     };
-    let status = SharedStatus::new(AppStatus::new(
-        role,
-        identity.id,
-        identity.name.clone(),
-        identity.os,
-        screen,
-    ));
+    status.update(|st| st.role = role);
 
     // UI native seulement si la plateforme la supporte et qu'on n'est pas en headless.
     let ui_enabled = nomad_ui::SUPPORTED && !cli.headless;
 
-    // Actions du menu : elles passent par une relance propre du process (réutilise
-    // tout le chemin de démarrage) plutôt qu'une reconfiguration réseau à chaud.
+    // Actions du menu tray : relayées vers le même handler que l'IPC.
     let on_action = {
-        let cfg = cfg.clone();
-        let config_path = config_path.clone();
-        let original_args: Vec<String> = std::env::args().skip(1).collect();
-        let base_args: Vec<String> = original_args
-            .iter()
-            .filter(|a| a.as_str() != "--server")
-            .cloned()
-            .collect();
-        move |action: UiAction| match action {
-            UiAction::Quit => std::process::exit(0),
-            UiAction::Reconnect => relaunch(&base_args),
-            UiAction::ForceServer => {
-                let mut a = base_args.clone();
-                a.push("--server".into());
-                relaunch(&a)
-            }
-            UiAction::Rename(name) => {
-                let mut c = cfg.clone();
-                c.name = name;
-                if let Err(e) = c.save(&config_path) {
-                    error!(error = %e, "sauvegarde du nom impossible");
-                }
-                relaunch(&original_args) // conserve le rôle courant
-            }
-        }
+        let handler = handler.clone();
+        move |action: UiAction| handler.handle(ui_to_daemon(action))
     };
 
     match endpoint {
@@ -268,6 +355,32 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }
         }
+    }
+}
+
+/// Résout le chemin du socket IPC : `--ipc-socket` si fourni, sinon à côté de la
+/// configuration. Repli sur le répertoire temporaire si le chemin dépasse la
+/// limite `sun_path` des sockets Unix (~104 octets), fréquente sous macOS où la
+/// config vit dans `~/Library/Application Support`.
+fn resolve_ipc_socket(cli: &Cli, config_path: &Path) -> PathBuf {
+    if let Some(path) = &cli.ipc_socket {
+        return path.clone();
+    }
+    let default = config_path
+        .parent()
+        .map(|p| p.join("nomad.sock"))
+        .or_else(Config::default_socket_path)
+        .unwrap_or_else(|| PathBuf::from("nomad.sock"));
+    if default.as_os_str().len() > 100 {
+        let fallback = std::env::temp_dir().join("nomad.sock");
+        warn!(
+            path = %default.display(),
+            fallback = %fallback.display(),
+            "chemin de socket trop long, repli sur le répertoire temporaire"
+        );
+        fallback
+    } else {
+        default
     }
 }
 
