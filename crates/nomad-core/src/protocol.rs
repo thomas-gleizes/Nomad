@@ -23,6 +23,15 @@ impl std::fmt::Display for NodeId {
     }
 }
 
+impl std::str::FromStr for NodeId {
+    type Err = uuid::Error;
+
+    /// Parse un UUID complet (forme reçue par l'API de contrôle, ex. `forget`).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(NodeId(Uuid::parse_str(s)?))
+    }
+}
+
 /// Système d'exploitation d'un nœud (utile pour adapter le mapping clavier / l'UI).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Os {

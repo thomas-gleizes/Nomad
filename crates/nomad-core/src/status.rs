@@ -32,17 +32,40 @@ impl Role {
     }
 }
 
-/// Un pair connu de la disposition (hors soi-même).
+/// Un pair connecté (hors soi-même).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub id: NodeId,
     pub name: String,
+    pub os: Os,
+    pub screen: Screen,
+    /// Adresse réseau (`ip:port`) — connue du serveur uniquement.
+    #[serde(default)]
+    pub addr: Option<String>,
+    /// Latence aller-retour mesurée, en millisecondes (indicative).
+    #[serde(default)]
+    pub latency_ms: Option<u32>,
+}
+
+/// Une machine déjà vue mais actuellement déconnectée. Persistée entre les
+/// sessions dans la configuration ; le serveur en est l'unique gestionnaire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnownPeer {
+    pub id: NodeId,
+    pub name: String,
+    pub os: Os,
+    /// Dernière adresse réseau connue.
+    #[serde(default)]
+    pub last_addr: Option<String>,
+    /// Horodatage de dernière présence, en secondes epoch.
+    pub last_seen_unix: u64,
 }
 
 /// Instantané de l'état applicatif présentable à l'utilisateur.
 ///
 /// Sérialisable tel quel : c'est le payload `status` exposé par l'API de
-/// contrôle IPC (`nomad-ipc`) et consommé par les coquilles natives.
+/// contrôle IPC (`nomad-ipc`) et consommé par les coquilles natives. Les champs
+/// ajoutés après coup portent `#[serde(default)]` pour rester compatibles.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppStatus {
     pub role: Role,
@@ -54,6 +77,12 @@ pub struct AppStatus {
     pub peers: Vec<PeerInfo>,
     /// Nœud dont l'écran est actuellement contrôlé (`None` = écran local).
     pub active: Option<NodeId>,
+    /// Machines connues mais déconnectées (serveur uniquement).
+    #[serde(default)]
+    pub known_offline: Vec<KnownPeer>,
+    /// Adresse du serveur (`ip:port`) — côté client uniquement.
+    #[serde(default)]
+    pub server_addr: Option<String>,
 }
 
 impl AppStatus {
@@ -67,6 +96,8 @@ impl AppStatus {
             screen,
             peers: Vec::new(),
             active: None,
+            known_offline: Vec::new(),
+            server_addr: None,
         }
     }
 }
@@ -131,7 +162,16 @@ mod tests {
         let s = sample();
         assert_eq!(s.generation(), 0);
         // Mutation effective.
-        s.update(|st| st.peers.push(PeerInfo { id: NodeId::random(), name: "a".into() }));
+        s.update(|st| {
+            st.peers.push(PeerInfo {
+                id: NodeId::random(),
+                name: "a".into(),
+                os: Os::Linux,
+                screen: Screen::new(1920, 1080),
+                addr: None,
+                latency_ms: None,
+            })
+        });
         assert_eq!(s.generation(), 1);
         // Mutation sans effet : pas de bump.
         s.update(|st| {

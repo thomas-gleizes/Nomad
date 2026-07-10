@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
-use nomad_core::NodeId;
+use nomad_core::{KnownPeer, NodeId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,6 +18,10 @@ pub struct Config {
     pub name: String,
     /// Port d'écoute serveur.
     pub port: u16,
+    /// Machines déjà vues (persistées pour la section « hors ligne »). Écrites
+    /// par l'orchestrateur serveur uniquement.
+    #[serde(default)]
+    pub known_peers: Vec<KnownPeer>,
 }
 
 impl Config {
@@ -66,6 +70,7 @@ impl Default for Config {
             node_id: Uuid::new_v4(),
             name,
             port: 47800,
+            known_peers: Vec::new(),
         }
     }
 }

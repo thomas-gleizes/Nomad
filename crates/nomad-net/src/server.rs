@@ -6,6 +6,7 @@
 //! routage en réagissant aux événements.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use nomad_core::layout::Screen;
@@ -25,6 +26,8 @@ pub enum ServerEvent {
         name: String,
         os: Os,
         screen: Screen,
+        /// Adresse distante de la connexion (si disponible).
+        addr: Option<SocketAddr>,
     },
     Left {
         node: NodeId,
@@ -130,6 +133,7 @@ async fn handle_conn(
     conns: ConnMap,
 ) -> anyhow::Result<()> {
     let _ = stream.set_nodelay(true); // latence d'abord
+    let addr = stream.peer_addr().ok();
     let (mut rh, mut wh) = stream.into_split();
 
     // Le premier message doit être un Hello.
@@ -150,6 +154,7 @@ async fn handle_conn(
         name,
         os,
         screen,
+        addr,
     });
 
     // Tâche d'écriture dédiée pour ce client.

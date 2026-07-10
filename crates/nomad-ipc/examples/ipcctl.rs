@@ -7,6 +7,7 @@
 //! cargo run -p nomad-ipc --example ipcctl -- force-server
 //! cargo run -p nomad-ipc --example ipcctl -- reconnect
 //! cargo run -p nomad-ipc --example ipcctl -- quit
+//! cargo run -p nomad-ipc --example ipcctl -- forget <uuid>
 //! ```
 //!
 //! Socket : `--socket <chemin>` sinon l'emplacement par défaut (à côté de la
@@ -45,6 +46,10 @@ async fn main() -> anyhow::Result<()> {
         "force-server" => format!(r#"{{"v":{VERSION},"id":1,"cmd":"force_server"}}"#),
         "reconnect" => format!(r#"{{"v":{VERSION},"id":1,"cmd":"reconnect"}}"#),
         "quit" => format!(r#"{{"v":{VERSION},"id":1,"cmd":"quit"}}"#),
+        "forget" => {
+            let node = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: forget <uuid>"))?;
+            format!(r#"{{"v":{VERSION},"id":1,"cmd":"forget","node":"{node}"}}"#)
+        }
         other => anyhow::bail!("commande inconnue: {other}"),
     };
 

@@ -10,6 +10,7 @@
 mod config;
 mod edge;
 mod inject_thread;
+mod known;
 mod motion;
 mod orchestrator;
 
@@ -26,11 +27,13 @@ use nomad_input::Captured;
 use nomad_ipc::DaemonAction;
 use nomad_net::{Endpoint, Identity};
 use nomad_ui::UiAction;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::inject_thread::InjectCmd;
+use crate::orchestrator::ControlCmd;
 
 #[derive(Parser, Debug)]
 #[command(name = "nomad", version, about = "Souris/clavier/presse-papiers partagés sur LAN")]
@@ -78,17 +81,19 @@ struct ActionHandler {
     original_args: Vec<String>,
     /// Arguments d'origine privés de `--server` (pour re-décider du rôle).
     base_args: Vec<String>,
+    /// Vers l'orchestrateur serveur, pour les commandes à chaud (`forget`).
+    control_tx: UnboundedSender<ControlCmd>,
 }
 
 impl ActionHandler {
-    fn new(cfg: Config, config_path: PathBuf) -> Self {
+    fn new(cfg: Config, config_path: PathBuf, control_tx: UnboundedSender<ControlCmd>) -> Self {
         let original_args: Vec<String> = std::env::args().skip(1).collect();
         let base_args = original_args
             .iter()
             .filter(|a| a.as_str() != "--server")
             .cloned()
             .collect();
-        Self { cfg, config_path, original_args, base_args }
+        Self { cfg, config_path, original_args, base_args, control_tx }
     }
 
     fn handle(&self, action: DaemonAction) {
@@ -101,12 +106,22 @@ impl ActionHandler {
                 relaunch(&a)
             }
             DaemonAction::Rename(name) => {
-                let mut c = self.cfg.clone();
+                // Relire depuis le disque avant d'écrire : l'orchestrateur peut
+                // avoir persisté des `known_peers` depuis le démarrage.
+                let mut c = Config::load_or_create(&self.config_path)
+                    .unwrap_or_else(|_| self.cfg.clone());
                 c.name = name;
                 if let Err(e) = c.save(&self.config_path) {
                     error!(error = %e, "sauvegarde du nom impossible");
                 }
                 relaunch(&self.original_args) // conserve le rôle courant
+            }
+            DaemonAction::Forget(id) => {
+                // Commande à chaud : pas de relance. Sans serveur actif (rôle
+                // client), le récepteur est absent — on ignore.
+                if self.control_tx.send(ControlCmd::Forget(id)).is_err() {
+                    warn!("commande « oublier » ignorée (aucun orchestrateur serveur)");
+                }
             }
         }
     }
@@ -156,8 +171,12 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
 
+    // Canal de contrôle à chaud : le handler y pousse (`forget`), l'orchestrateur
+    // serveur le consomme. En rôle client, le récepteur est simplement ignoré.
+    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel::<ControlCmd>();
+
     // Handler d'actions partagé entre le tray et l'API IPC.
-    let handler = ActionHandler::new(cfg.clone(), config_path.clone());
+    let handler = ActionHandler::new(cfg.clone(), config_path.clone(), control_tx);
 
     // API de contrôle IPC : liée **tôt** (avant réseau/capture) afin de détecter
     // une instance déjà en cours et de sortir proprement. Le serveur lui-même est
@@ -243,7 +262,7 @@ fn main() -> anyhow::Result<()> {
     // continue ensuite de mettre à jour l'état (pairs, écran actif).
     let role = match &endpoint {
         Endpoint::Server(_) => Role::Server,
-        Endpoint::Client(_) => Role::Client,
+        Endpoint::Client { .. } => Role::Client,
     };
     status.update(|st| st.role = role);
 
@@ -273,6 +292,9 @@ fn main() -> anyhow::Result<()> {
                 clip_change_rx,
                 grabbing.clone(),
                 status.clone(),
+                control_rx,
+                config_path.clone(),
+                cfg.known_peers.clone(),
             ));
 
             // Capture globale bloquante. La fermeture décide de la suppression
@@ -335,7 +357,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }
         }
-        Endpoint::Client(handle) => {
+        Endpoint::Client { handle, server } => {
             info!("rôle CLIENT (écran) — injection des événements du serveur");
             print_permissions_hint();
             let client = orchestrator::run_client(
@@ -346,6 +368,8 @@ fn main() -> anyhow::Result<()> {
                 screen,
                 identity.id,
                 status.clone(),
+                Some(server.addr.to_string()),
+                server.node_id,
             );
             if ui_enabled {
                 rt.spawn(client);

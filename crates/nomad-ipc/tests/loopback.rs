@@ -83,7 +83,16 @@ async fn subscribe_streams_status_changes() {
     assert!(initial.status.peers.is_empty());
 
     // Une mutation de l'état produit un nouvel événement.
-    status.update(|st| st.peers.push(PeerInfo { id: NodeId::random(), name: "forge".into() }));
+    status.update(|st| {
+        st.peers.push(PeerInfo {
+            id: NodeId::random(),
+            name: "forge".into(),
+            os: Os::Windows,
+            screen: Screen::new(1920, 1080),
+            addr: Some("192.168.1.31:47800".into()),
+            latency_ms: Some(3),
+        })
+    });
     let changed = client.recv_event().await;
     assert_eq!(changed.status.peers.len(), 1);
     assert_eq!(changed.status.peers[0].name, "forge");
@@ -96,12 +105,38 @@ async fn command_routes_to_action() {
     let mut actions = start(&path, status.clone()).await;
 
     let mut client = Client::connect(&path).await;
-    client.send(&req("rename", Some("atlas2"))).await;
+    client.send(&req("rename", Some(("name", "atlas2")))).await;
 
     // La réponse `ok` précède l'exécution de l'action.
     assert!(client.recv_response().await.ok);
     let action = timeout(actions.recv()).await.expect("action reçue");
     assert_eq!(action, DaemonAction::Rename("atlas2".into()));
+}
+
+#[tokio::test]
+async fn forget_routes_to_action() {
+    let path = temp_socket("forget");
+    let status = sample_status();
+    let mut actions = start(&path, status.clone()).await;
+
+    let id = NodeId::random();
+    let mut client = Client::connect(&path).await;
+    client.send(&req("forget", Some(("node", &id.0.to_string())))).await;
+
+    assert!(client.recv_response().await.ok);
+    let action = timeout(actions.recv()).await.expect("action reçue");
+    assert_eq!(action, DaemonAction::Forget(id));
+}
+
+#[tokio::test]
+async fn forget_with_bad_id_is_rejected() {
+    let path = temp_socket("forget-bad");
+    let status = sample_status();
+    let _actions = start(&path, status.clone()).await;
+
+    let mut client = Client::connect(&path).await;
+    client.send(&req("forget", Some(("node", "pas-un-uuid")))).await;
+    assert!(!client.recv_response().await.ok);
 }
 
 #[tokio::test]
@@ -186,9 +221,9 @@ async fn start(path: &Path, status: SharedStatus) -> mpsc::UnboundedReceiver<Dae
     rx
 }
 
-fn req(cmd: &str, name: Option<&str>) -> String {
-    match name {
-        Some(n) => format!(r#"{{"v":{VERSION},"id":1,"cmd":"{cmd}","name":"{n}"}}"#),
+fn req(cmd: &str, field: Option<(&str, &str)>) -> String {
+    match field {
+        Some((k, v)) => format!(r#"{{"v":{VERSION},"id":1,"cmd":"{cmd}","{k}":"{v}"}}"#),
         None => format!(r#"{{"v":{VERSION},"id":1,"cmd":"{cmd}"}}"#),
     }
 }

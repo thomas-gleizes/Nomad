@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nomad_core::SharedStatus;
+use nomad_core::{NodeId, SharedStatus};
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -203,6 +203,18 @@ async fn handle_conn(
                         )),
                         None => outgoing
                             .push(line_out(&Response::error(req.id, "nom vide ou manquant"))),
+                    }
+                }
+                "forget" => {
+                    match req.node.as_deref().and_then(|s| s.parse::<NodeId>().ok()) {
+                        Some(id) => outgoing.push(Out::LineThenAction(
+                            encode(&Response::ok(req.id)),
+                            DaemonAction::Forget(id),
+                        )),
+                        None => outgoing.push(line_out(&Response::error(
+                            req.id,
+                            "identifiant de nœud invalide ou manquant",
+                        ))),
                     }
                 }
                 "force_server" => outgoing.push(Out::LineThenAction(

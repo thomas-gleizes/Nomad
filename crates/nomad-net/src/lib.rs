@@ -16,6 +16,7 @@ use nomad_core::{Message, NodeId, Os};
 use tracing::{info, warn};
 
 pub use client::ClientHandle;
+pub use discovery::DiscoveredServer;
 pub use server::{ServerEvent, ServerHandle};
 
 /// Identité locale annoncée lors de la connexion.
@@ -63,7 +64,11 @@ impl Default for Config {
 /// Endpoint réseau, selon le rôle élu.
 pub enum Endpoint {
     Server(ServerHandle),
-    Client(ClientHandle),
+    Client {
+        handle: ClientHandle,
+        /// Serveur auquel on s'est connecté (adresse + id mDNS si annoncé).
+        server: DiscoveredServer,
+    },
 }
 
 /// Effectue la découverte + l'élection de rôle, puis met en place le transport.
@@ -78,7 +83,7 @@ pub async fn start(identity: Identity, cfg: Config) -> anyhow::Result<Endpoint> 
             // Une annonce peut être périmée (serveur disparu) : l'échec de
             // connexion n'est pas fatal, on se promeut serveur.
             match client::connect(server.addr, identity.hello()).await {
-                Ok(client) => return Ok(Endpoint::Client(client)),
+                Ok(client) => return Ok(Endpoint::Client { handle: client, server }),
                 Err(e) => {
                     warn!(error = %e, "connexion au serveur découvert impossible → auto-promotion en serveur");
                 }

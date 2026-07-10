@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use nomad_core::AppStatus;
+use nomad_core::{AppStatus, NodeId};
 
 /// Version courante du protocole. Toute requête doit l'annoncer.
 pub const VERSION: u32 = 1;
@@ -28,8 +28,12 @@ pub struct Request {
     #[serde(default)]
     pub id: u64,
     pub cmd: String,
+    /// Paramètre de `rename`.
     #[serde(default)]
     pub name: Option<String>,
+    /// Paramètre de `forget` : UUID de la machine à oublier.
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 /// Réponse à une [`Request`], corrélée par `id`.
@@ -88,6 +92,8 @@ pub enum DaemonAction {
     ForceServer,
     /// Renommer le nœud (nouveau nom déjà validé, non vide).
     Rename(String),
+    /// Oublier une machine connue déconnectée (sans relance).
+    Forget(NodeId),
 }
 
 #[cfg(test)]

@@ -22,11 +22,12 @@ async fn client_joins_and_messages_relay() {
     };
     let mut cli = client::connect(addr, hello).await.unwrap();
 
-    // 1) Le serveur voit le client arriver.
+    // 1) Le serveur voit le client arriver, avec son adresse distante.
     match timeout(srv.recv()).await {
-        Some(ServerEvent::Joined { node, name, .. }) => {
+        Some(ServerEvent::Joined { node, name, addr, .. }) => {
             assert_eq!(node, client_id);
             assert_eq!(name, "client-test");
+            assert!(addr.is_some(), "l'adresse distante doit être connue");
         }
         other => panic!("attendu Joined, reçu {other:?}"),
     }
