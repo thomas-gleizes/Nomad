@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nomad_core::layout::Screen;
-use nomad_core::status::{AppStatus, PeerInfo, Role, SharedStatus};
+use nomad_core::status::{AppStatus, PeerInfo, Role, ScreenGeom, SharedStatus};
 use nomad_core::{NodeId, Os};
 use nomad_ipc::{DaemonAction, Event, Response, VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
@@ -140,6 +140,44 @@ async fn forget_with_bad_id_is_rejected() {
 }
 
 #[tokio::test]
+async fn set_layout_routes_to_action() {
+    let path = temp_socket("sl");
+    let (status, _a, b) = status_with_two_screens();
+    let mut actions = start(&path, status.clone()).await;
+
+    let mut client = Client::connect(&path).await;
+    // Déplace B au-dessus de A (0,-100) : pas de chevauchement.
+    let req = format!(
+        r#"{{"v":{VERSION},"id":1,"cmd":"set_layout","layout":[{{"node":"{}","x":0,"y":-100}}]}}"#,
+        b.0
+    );
+    client.send(&req).await;
+
+    assert!(client.recv_response().await.ok);
+    let action = timeout(actions.recv()).await.expect("action reçue");
+    assert_eq!(action, DaemonAction::SetLayout(vec![(b, 0, -100)]));
+}
+
+#[tokio::test]
+async fn set_layout_overlap_is_rejected() {
+    let path = temp_socket("slov");
+    let (status, _a, b) = status_with_two_screens();
+    let _actions = start(&path, status.clone()).await;
+
+    let mut client = Client::connect(&path).await;
+    // Déplace B à (50,0) : chevauche A.
+    let req = format!(
+        r#"{{"v":{VERSION},"id":1,"cmd":"set_layout","layout":[{{"node":"{}","x":50,"y":0}}]}}"#,
+        b.0
+    );
+    client.send(&req).await;
+
+    let resp = client.recv_response().await;
+    assert!(!resp.ok);
+    assert!(resp.error.unwrap().contains("chevauchent"));
+}
+
+#[tokio::test]
 async fn malformed_request_keeps_connection() {
     let path = temp_socket("malformed");
     let status = sample_status();
@@ -206,6 +244,18 @@ fn sample_status() -> SharedStatus {
         Os::MacOs,
         Screen::new(2560, 1440),
     ))
+}
+
+/// État avec deux écrans côte à côte (A à l'origine, B à sa droite), pour tester
+/// `set_layout`.
+fn status_with_two_screens() -> (SharedStatus, NodeId, NodeId) {
+    let (a, b) = (NodeId::random(), NodeId::random());
+    let mut st = AppStatus::new(Role::Server, a, "atlas".into(), Os::MacOs, Screen::new(100, 100));
+    st.layout = vec![
+        ScreenGeom { id: a, x: 0, y: 0, width: 100, height: 100 },
+        ScreenGeom { id: b, x: 100, y: 0, width: 100, height: 100 },
+    ];
+    (SharedStatus::new(st), a, b)
 }
 
 /// Lie le socket et lance le serveur ; renvoie le récepteur des actions

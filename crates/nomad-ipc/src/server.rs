@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nomad_core::{NodeId, SharedStatus};
+use nomad_core::status::ScreenGeom;
+use nomad_core::{first_overlap, NodeId, Rect, SharedStatus};
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -217,6 +218,17 @@ async fn handle_conn(
                         ))),
                     }
                 }
+                "set_layout" => {
+                    // Validé ici (contre l'état courant) pour répondre ok/erreur
+                    // avant d'appliquer ; l'orchestrateur revalide par sécurité.
+                    match validate_set_layout(&status.snapshot().layout, req.layout.as_deref()) {
+                        Ok(entries) => outgoing.push(Out::LineThenAction(
+                            encode(&Response::ok(req.id)),
+                            DaemonAction::SetLayout(entries),
+                        )),
+                        Err(e) => outgoing.push(line_out(&Response::error(req.id, e))),
+                    }
+                }
                 "force_server" => outgoing.push(Out::LineThenAction(
                     encode(&Response::ok(req.id)),
                     DaemonAction::ForceServer,
@@ -256,4 +268,47 @@ fn encode<T: Serialize>(value: &T) -> String {
 
 fn line_out<T: Serialize>(value: &T) -> Out {
     Out::Line(encode(value))
+}
+
+/// Valide une commande `set_layout` contre la géométrie courante (`geom`).
+///
+/// Vérifie que chaque entrée référence un écran connu, que son UUID est valide,
+/// et que le résultat fusionné ne produit aucun chevauchement. Renvoie les
+/// entrées prêtes à appliquer, ou un message d'erreur lisible.
+fn validate_set_layout(
+    geom: &[ScreenGeom],
+    entries: Option<&[crate::protocol::LayoutEntryDTO]>,
+) -> Result<Vec<(NodeId, i32, i32)>, String> {
+    let entries = entries.ok_or("champ « layout » manquant")?;
+    if geom.is_empty() {
+        return Err("aucune disposition connue (démon en cours de connexion ?)".into());
+    }
+
+    let mut parsed = Vec::with_capacity(entries.len());
+    // Positions résultantes par nœud (défaut = position actuelle).
+    let mut merged: std::collections::HashMap<NodeId, (i32, i32)> =
+        geom.iter().map(|g| (g.id, (g.x, g.y))).collect();
+
+    for e in entries {
+        let id: NodeId = e.node.parse().map_err(|_| format!("UUID invalide : {}", e.node))?;
+        if !merged.contains_key(&id) {
+            return Err(format!("écran inconnu : {id}"));
+        }
+        merged.insert(id, (e.x, e.y));
+        parsed.push((id, e.x, e.y));
+    }
+
+    // Chevauchements sur l'ensemble des écrans connus, avec leurs tailles.
+    let rects: Vec<(NodeId, Rect)> = geom
+        .iter()
+        .map(|g| {
+            let &(x, y) = merged.get(&g.id).unwrap_or(&(g.x, g.y));
+            (g.id, Rect { x, y, w: g.width, h: g.height })
+        })
+        .collect();
+    if let Some((a, b)) = first_overlap(&rects) {
+        return Err(format!("les écrans {a} et {b} se chevauchent"));
+    }
+
+    Ok(parsed)
 }

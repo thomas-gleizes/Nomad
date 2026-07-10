@@ -3,12 +3,21 @@
 //! Stockée en TOML dans le répertoire de configuration utilisateur
 //! (`~/.config/nomad/config.toml` sous Linux/macOS).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 use nomad_core::{KnownPeer, NodeId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Position persistée d'un écran dans le plan virtuel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenPos {
+    pub id: NodeId,
+    pub x: i32,
+    pub y: i32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -22,6 +31,25 @@ pub struct Config {
     /// par l'orchestrateur serveur uniquement.
     #[serde(default)]
     pub known_peers: Vec<KnownPeer>,
+    /// Positions des écrans dans le plan virtuel (disposition persistée).
+    /// Écrites par l'orchestrateur serveur uniquement.
+    #[serde(default)]
+    pub screens: Vec<ScreenPos>,
+}
+
+impl Config {
+    /// Positions persistées sous forme de map, pour le placement.
+    pub fn screen_positions(&self) -> HashMap<NodeId, (i32, i32)> {
+        self.screens.iter().map(|s| (s.id, (s.x, s.y))).collect()
+    }
+
+    /// Remplace les positions persistées à partir d'une map.
+    pub fn set_screen_positions(&mut self, positions: &HashMap<NodeId, (i32, i32)>) {
+        self.screens = positions
+            .iter()
+            .map(|(&id, &(x, y))| ScreenPos { id, x, y })
+            .collect();
+    }
 }
 
 impl Config {
@@ -71,6 +99,7 @@ impl Default for Config {
             name,
             port: 47800,
             known_peers: Vec::new(),
+            screens: Vec::new(),
         }
     }
 }

@@ -21,6 +21,14 @@ pub const VERSION: u32 = 1;
 /// Le champ `cmd` porte la commande ; les paramètres éventuels sont des champs
 /// frères optionnels (aujourd'hui seul `name` pour `rename`). `id` est un jeton
 /// opaque recopié tel quel dans la [`Response`] correspondante.
+/// Une position d'écran dans la commande `set_layout`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LayoutEntryDTO {
+    pub node: String,
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Request {
     #[serde(default)]
@@ -34,6 +42,9 @@ pub struct Request {
     /// Paramètre de `forget` : UUID de la machine à oublier.
     #[serde(default)]
     pub node: Option<String>,
+    /// Paramètre de `set_layout` : nouvelles positions d'écrans.
+    #[serde(default)]
+    pub layout: Option<Vec<LayoutEntryDTO>>,
 }
 
 /// Réponse à une [`Request`], corrélée par `id`.
@@ -94,6 +105,8 @@ pub enum DaemonAction {
     Rename(String),
     /// Oublier une machine connue déconnectée (sans relance).
     Forget(NodeId),
+    /// Repositionner des écrans dans le plan (validé, sans relance).
+    SetLayout(Vec<(NodeId, i32, i32)>),
 }
 
 #[cfg(test)]

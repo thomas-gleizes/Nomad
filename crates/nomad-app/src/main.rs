@@ -13,6 +13,7 @@ mod inject_thread;
 mod known;
 mod motion;
 mod orchestrator;
+mod placement;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -121,6 +122,11 @@ impl ActionHandler {
                 // client), le récepteur est absent — on ignore.
                 if self.control_tx.send(ControlCmd::Forget(id)).is_err() {
                     warn!("commande « oublier » ignorée (aucun orchestrateur serveur)");
+                }
+            }
+            DaemonAction::SetLayout(entries) => {
+                if self.control_tx.send(ControlCmd::SetLayout(entries)).is_err() {
+                    warn!("commande « disposition » ignorée (aucun orchestrateur serveur)");
                 }
             }
         }
@@ -295,6 +301,7 @@ fn main() -> anyhow::Result<()> {
                 control_rx,
                 config_path.clone(),
                 cfg.known_peers.clone(),
+                cfg.screen_positions(),
             ));
 
             // Capture globale bloquante. La fermeture décide de la suppression

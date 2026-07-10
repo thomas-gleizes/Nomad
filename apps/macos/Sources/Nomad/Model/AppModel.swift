@@ -17,6 +17,7 @@ enum DaemonCommand {
     case forceServer
     case reconnect
     case forget(String)
+    case setLayout([LayoutEntryReq])
 }
 
 /// État applicatif observable, unique source de vérité de l'UI. Miroir de
@@ -95,6 +96,8 @@ final class AppModel {
                     _ = try await client.send(cmd: "reconnect")
                 case .forget(let id):
                     _ = try await client.send(cmd: "forget", node: id)
+                case .setLayout(let entries):
+                    _ = try await client.send(cmd: "set_layout", layout: entries)
                 }
             } catch {
                 log.error("commande échouée: \(error.localizedDescription, privacy: .public)")

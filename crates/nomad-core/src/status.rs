@@ -47,6 +47,16 @@ pub struct PeerInfo {
     pub latency_ms: Option<u32>,
 }
 
+/// Géométrie d'un écran dans le plan virtuel, exposée à l'UI (page Disposition).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenGeom {
+    pub id: NodeId,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Une machine déjà vue mais actuellement déconnectée. Persistée entre les
 /// sessions dans la configuration ; le serveur en est l'unique gestionnaire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +93,9 @@ pub struct AppStatus {
     /// Adresse du serveur (`ip:port`) — côté client uniquement.
     #[serde(default)]
     pub server_addr: Option<String>,
+    /// Disposition courante : géométrie de chaque écran dans le plan virtuel.
+    #[serde(default)]
+    pub layout: Vec<ScreenGeom>,
 }
 
 impl AppStatus {
@@ -98,6 +111,7 @@ impl AppStatus {
             active: None,
             known_offline: Vec::new(),
             server_addr: None,
+            layout: Vec::new(),
         }
     }
 }

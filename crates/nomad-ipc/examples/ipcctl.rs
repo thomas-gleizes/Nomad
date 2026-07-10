@@ -50,6 +50,14 @@ async fn main() -> anyhow::Result<()> {
             let node = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: forget <uuid>"))?;
             format!(r#"{{"v":{VERSION},"id":1,"cmd":"forget","node":"{node}"}}"#)
         }
+        "set-layout" => {
+            let node = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: set-layout <uuid> <x> <y>"))?;
+            let x = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: set-layout <uuid> <x> <y>"))?;
+            let y = args.get(3).ok_or_else(|| anyhow::anyhow!("usage: set-layout <uuid> <x> <y>"))?;
+            format!(
+                r#"{{"v":{VERSION},"id":1,"cmd":"set_layout","layout":[{{"node":"{node}","x":{x},"y":{y}}}]}}"#
+            )
+        }
         other => anyhow::bail!("commande inconnue: {other}"),
     };
 

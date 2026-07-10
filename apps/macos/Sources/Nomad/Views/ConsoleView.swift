@@ -59,6 +59,8 @@ struct ConsoleView: View {
             .safeAreaInset(edge: .bottom) { StatusCard(model: model) }
         } detail: {
             switch selection ?? .machines {
+            case .layout:
+                LayoutView(model: model)
             case .machines:
                 MachinesView(model: model)
             case let other:

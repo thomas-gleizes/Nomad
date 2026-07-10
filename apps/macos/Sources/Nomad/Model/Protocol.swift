@@ -27,6 +27,15 @@ struct KnownPeerDTO: Codable, Hashable, Sendable, Identifiable {
     let lastSeenUnix: Int
 }
 
+/// Géométrie d'un écran dans le plan virtuel (page Disposition).
+struct ScreenGeomDTO: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let x: Int
+    let y: Int
+    let width: Int
+    let height: Int
+}
+
 struct StatusDTO: Codable, Hashable, Sendable {
     let role: String
     let selfId: String
@@ -37,9 +46,17 @@ struct StatusDTO: Codable, Hashable, Sendable {
     let active: String?
     let knownOffline: [KnownPeerDTO]
     let serverAddr: String?
+    let layout: [ScreenGeomDTO]
 }
 
 // MARK: - Trames du protocole
+
+/// Une position d'écran envoyée dans `set_layout`.
+struct LayoutEntryReq: Codable {
+    let node: String
+    let x: Int
+    let y: Int
+}
 
 /// Requête envoyée au démon. Les clés sont déjà en un seul mot : pas de
 /// conversion de casse nécessaire.
@@ -49,6 +66,7 @@ struct RequestDTO: Codable {
     let cmd: String
     var name: String?
     var node: String?
+    var layout: [LayoutEntryReq]?
 }
 
 /// Trame reçue : réponse (avec `id`) ou événement poussé (avec `event`). On

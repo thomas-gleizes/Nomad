@@ -12,6 +12,12 @@
 use nomad_core::layout::{Layout, Screen, Side};
 use nomad_core::NodeId;
 
+/// Convertit un point en pixels locaux (`0..dim`) vers un ratio `0..1` de
+/// l'écran. Même convention que le reste du protocole (le client remultiplie).
+fn to_ratio((px, py): (f64, f64), s: Screen) -> (f64, f64) {
+    (px / s.width as f64, py / s.height as f64)
+}
+
 /// Résultat d'un mouvement traité par le contrôleur.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MoveOutcome {
@@ -90,35 +96,48 @@ impl EdgeController {
         }
     }
 
+    /// Origine (coin haut-gauche) d'un écran dans le plan virtuel.
+    fn origin_of(&self, id: NodeId) -> (f64, f64) {
+        self.layout
+            .positions
+            .get(&id)
+            .map(|&(x, y)| (x as f64, y as f64))
+            .unwrap_or((0.0, 0.0))
+    }
+
     /// Mouvement en **mode local** : `(x, y)` est la position absolue réelle du
     /// curseur sur l'écran serveur. Détecte une sortie par un bord adjacent.
     pub fn local_move(&mut self, x: f64, y: f64) -> MoveOutcome {
         let w = self.self_screen.width as f64;
         let h = self.self_screen.height as f64;
 
-        let (side, perp) = if x >= w - 1.0 {
-            (Side::Right, y / h)
+        let side = if x >= w - 1.0 {
+            Side::Right
         } else if x <= 0.0 {
-            (Side::Left, y / h)
+            Side::Left
         } else if y <= 0.0 {
-            (Side::Top, x / w)
+            Side::Top
         } else if y >= h - 1.0 {
-            (Side::Bottom, x / w)
+            Side::Bottom
         } else {
             return MoveOutcome::none();
         };
 
-        let Some(neighbor) = self.layout.neighbor(self.self_id, side) else {
+        // Coordonnée du plan le long du bord de sortie.
+        let (ox, oy) = self.origin_of(self.self_id);
+        let coord = if side.is_horizontal() { oy + y } else { ox + x };
+
+        let Some((neighbor, entry_local)) = self.layout.neighbor_at(self.self_id, side, coord)
+        else {
             return MoveOutcome::none();
         };
 
-        let (erx, ery) = Layout::entry_ratio(side, perp);
         let ns = self.screen_of(neighbor);
         self.active = neighbor;
         self.exit_side = Some(side);
-        self.virtual_pos = (erx * ns.width as f64, ery * ns.height as f64);
+        self.virtual_pos = entry_local;
         MoveOutcome {
-            entry: Some((erx, ery)),
+            entry: Some(to_ratio(entry_local, ns)),
             remote_abs: None,
         }
     }
@@ -154,9 +173,11 @@ impl EdgeController {
             };
         };
 
-        let perp = if side.is_horizontal() { vy / h } else { vx / w };
+        // Coordonnée du plan le long du bord franchi.
+        let (ox, oy) = self.origin_of(self.active);
+        let coord = if side.is_horizontal() { oy + vy } else { ox + vx };
 
-        match self.layout.neighbor(self.active, side) {
+        match self.layout.neighbor_at(self.active, side, coord) {
             None => {
                 // Bord du monde : on reste collé au bord.
                 self.virtual_pos = (vx.clamp(0.0, w), vy.clamp(0.0, h));
@@ -165,18 +186,17 @@ impl EdgeController {
                     remote_abs: Some((self.virtual_pos.0 / w, self.virtual_pos.1 / h)),
                 }
             }
-            Some(next) => {
-                let (erx, ery) = Layout::entry_ratio(side, perp);
+            Some((next, entry_local)) => {
                 self.active = next;
                 if next != self.self_id {
-                    let ns = self.screen_of(next);
-                    self.virtual_pos = (erx * ns.width as f64, ery * ns.height as f64);
+                    self.virtual_pos = entry_local;
                 } else {
                     // Retour en local : plus de bord de sortie.
                     self.exit_side = None;
                 }
+                let ns = self.screen_of(next);
                 MoveOutcome {
-                    entry: Some((erx, ery)),
+                    entry: Some(to_ratio(entry_local, ns)),
                     remote_abs: None,
                 }
             }
@@ -189,6 +209,7 @@ mod tests {
     use super::*;
     use nomad_core::layout::{NodeInfo, Screen};
     use nomad_core::Os;
+    use std::collections::HashMap;
 
     fn node(id: NodeId) -> NodeInfo {
         NodeInfo {
@@ -202,7 +223,7 @@ mod tests {
     /// Construit S—A—B en rangée et un contrôleur centré sur S.
     fn setup() -> (EdgeController, NodeId, NodeId, NodeId) {
         let (s, a, b) = (NodeId::random(), NodeId::random(), NodeId::random());
-        let layout = Layout::horizontal_row(vec![node(s), node(a), node(b)]);
+        let layout = Layout::row(vec![node(s), node(a), node(b)]);
         let ctrl = EdgeController::new(s, Screen::new(100, 100), layout);
         (ctrl, s, a, b)
     }
@@ -246,7 +267,8 @@ mod tests {
         let out = c.remote_advance(-60.0, 0.0); // -> (-10,50) franchit la gauche de A -> S
         assert_eq!(c.active(), s);
         assert!(c.is_local());
-        assert_eq!(out.entry, Some((1.0, 0.5))); // rentre par le bord droit de S
+        // Rentre par le bord droit de S : dernier pixel (99/100 = 0.99), même hauteur.
+        assert_eq!(out.entry, Some((0.99, 0.5)));
     }
 
     #[test]
@@ -280,5 +302,62 @@ mod tests {
         let out = c.remote_advance(0.0, -200.0);
         assert_eq!(c.active(), a);
         assert_eq!(out.remote_abs, Some((0.0, 0.0)));
+    }
+
+    /// Écran A posé **au-dessus** de S : la sortie par le haut y transite.
+    #[test]
+    fn local_top_edge_enters_screen_above() {
+        let (s, a) = (NodeId::random(), NodeId::random());
+        let mut pos = HashMap::new();
+        pos.insert(s, (0, 0));
+        pos.insert(a, (0, -100));
+        let layout = Layout::from_positions(vec![node(s), node(a)], pos);
+        let mut c = EdgeController::new(s, Screen::new(100, 100), layout);
+
+        let out = c.local_move(30.0, 0.0); // bord haut à x=30
+        assert_eq!(c.active(), a);
+        assert_eq!(c.exit_side(), Some(Side::Top));
+        // Entre par le bas de A (dernier pixel, 99/100), à x=30.
+        assert_eq!(out.entry, Some((0.3, 0.99)));
+    }
+
+    /// Sortie vers une zone de bord sans voisin : rien ne se passe.
+    #[test]
+    fn edge_without_neighbor_does_nothing() {
+        // A à droite mais décalé vers le bas de 60 px.
+        let (s, a) = (NodeId::random(), NodeId::random());
+        let mut pos = HashMap::new();
+        pos.insert(s, (0, 0));
+        pos.insert(a, (100, 60));
+        let layout = Layout::from_positions(vec![node(s), node(a)], pos);
+        let mut c = EdgeController::new(s, Screen::new(100, 100), layout);
+
+        // Sortie à droite en haut (y=20 plan) : A couvre [60,160), pas de voisin.
+        let out = c.local_move(99.0, 20.0);
+        assert_eq!(out, MoveOutcome::none());
+        assert!(c.is_local());
+        // Sortie à droite en bas (y=80 plan) : dans A → transition.
+        let out = c.local_move(99.0, 80.0);
+        assert_eq!(c.active(), a);
+        assert_eq!(out.entry, Some((0.0, 0.2))); // 80 - 60 = 20 local, /100
+    }
+
+    /// Retour vertical vers l'écran local depuis l'écran du dessus.
+    #[test]
+    fn crossing_down_returns_to_local() {
+        let (s, a) = (NodeId::random(), NodeId::random());
+        let mut pos = HashMap::new();
+        pos.insert(s, (0, 0));
+        pos.insert(a, (0, -100));
+        let layout = Layout::from_positions(vec![node(s), node(a)], pos);
+        let mut c = EdgeController::new(s, Screen::new(100, 100), layout);
+
+        c.local_move(30.0, 0.0); // -> A par le haut ; on atterrit en bas de A (y=99)
+        assert_eq!(c.active(), a);
+        c.remote_advance(0.0, -40.0); // remonte dans A -> (30, 59)
+        let out = c.remote_advance(0.0, 60.0); // franchit le bas de A -> retour S
+        assert!(c.is_local());
+        assert_eq!(c.exit_side(), None);
+        assert_eq!(out.entry, Some((0.3, 0.0))); // rentre par le haut de S, à x=30
     }
 }

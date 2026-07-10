@@ -78,8 +78,13 @@ final class IpcClient: @unchecked Sendable {
     // MARK: Commande ponctuelle
 
     /// Ouvre une connexion, envoie une commande, lit une réponse, ferme.
-    func send(cmd: String, name: String? = nil, node: String? = nil) async throws -> IncomingDTO {
-        let request = RequestDTO(v: ipcVersion, id: 1, cmd: cmd, name: name, node: node)
+    func send(
+        cmd: String,
+        name: String? = nil,
+        node: String? = nil,
+        layout: [LayoutEntryReq]? = nil
+    ) async throws -> IncomingDTO {
+        let request = RequestDTO(v: ipcVersion, id: 1, cmd: cmd, name: name, node: node, layout: layout)
         return try await withCheckedThrowingContinuation { continuation in
             let conn = NWConnection(to: .unix(path: self.socketPath), using: .tcp)
             let buffer = LineBuffer()

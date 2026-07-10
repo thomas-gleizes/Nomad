@@ -17,8 +17,8 @@ use std::time::Instant;
 
 use nomad_clip::ClipCmd;
 use nomad_core::layout::{Layout, NodeInfo, Screen};
-use nomad_core::status::{PeerInfo, SharedStatus};
-use nomad_core::{Button, InputEvent, Key, KnownPeer, Message, NodeId};
+use nomad_core::status::{PeerInfo, ScreenGeom, SharedStatus};
+use nomad_core::{first_overlap, Button, InputEvent, Key, KnownPeer, Message, NodeId, Rect};
 use nomad_input::Captured;
 use nomad_net::{ClientHandle, Identity, ServerEvent, ServerHandle};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -30,6 +30,7 @@ use crate::edge::{EdgeController, MoveOutcome};
 use crate::inject_thread::InjectCmd;
 use crate::known;
 use crate::motion::{edge_anchor, entry_px, MotionTracker};
+use crate::placement;
 
 /// Intervalle de mesure de latence (Ping applicatif), dans les deux sens.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
@@ -40,6 +41,25 @@ const PING_INTERVAL: Duration = Duration::from_secs(5);
 pub enum ControlCmd {
     /// Oublier une machine connue actuellement déconnectée.
     Forget(NodeId),
+    /// Repositionner des écrans dans le plan (disposition 2D).
+    SetLayout(Vec<(NodeId, i32, i32)>),
+}
+
+/// Construit la vue `ScreenGeom` (exposée à l'UI) à partir d'une disposition.
+fn layout_geometry(layout: &Layout) -> Vec<ScreenGeom> {
+    layout
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            layout.rect_of(n.id).map(|r| ScreenGeom {
+                id: n.id,
+                x: r.x,
+                y: r.y,
+                width: r.w,
+                height: r.h,
+            })
+        })
+        .collect()
 }
 
 /// Secondes epoch courantes (pour horodater la dernière présence d'un pair).
@@ -89,7 +109,9 @@ struct Server {
     latencies: HashMap<NodeId, u32>,
     /// Machines déjà vues (connectées ou non) ; persistées en config.
     known: Vec<KnownPeer>,
-    /// Chemin de config, pour persister `known`.
+    /// Positions des écrans dans le plan virtuel ; persistées en config.
+    screen_positions: HashMap<NodeId, (i32, i32)>,
+    /// Chemin de config, pour persister `known` et `screen_positions`.
     config_path: PathBuf,
 }
 
@@ -107,6 +129,7 @@ pub async fn run_server(
     mut control_rx: UnboundedReceiver<ControlCmd>,
     config_path: PathBuf,
     known: Vec<KnownPeer>,
+    screen_positions: HashMap<NodeId, (i32, i32)>,
 ) {
     let self_id = identity.id;
     let screen = identity.screen;
@@ -118,12 +141,13 @@ pub async fn run_server(
         os: identity.os,
         screen,
     }];
+    let initial_layout = placement::build_layout(nodes.clone(), &screen_positions);
     let mut state = Server {
         srv,
         self_id,
         screen,
         center: ((screen.width / 2) as i32, (screen.height / 2) as i32),
-        ctrl: EdgeController::new(self_id, screen, Layout::horizontal_row(nodes.clone())),
+        ctrl: EdgeController::new(self_id, screen, initial_layout.clone()),
         nodes,
         tracker: MotionTracker::new(WARP_TOLERANCE),
         held_keys: HashSet::new(),
@@ -136,11 +160,13 @@ pub async fn run_server(
         pings: HashMap::new(),
         latencies: HashMap::new(),
         known,
+        screen_positions: initial_layout.positions.clone(),
         config_path,
     };
 
-    // Publie l'état initial des machines connues (toutes hors ligne au démarrage).
+    // Publie l'état initial (machines connues hors ligne + disposition).
     state.sync_status_known();
+    state.sync_status_layout(&initial_layout);
 
     let mut ping_timer = interval(PING_INTERVAL);
 
@@ -176,11 +202,10 @@ impl Server {
                     addr.map(|a| a.to_string()),
                     now_unix(),
                 );
-                self.persist_known();
-                let layout = Layout::horizontal_row(self.nodes.clone());
-                self.ctrl.set_layout(layout.clone());
+                let layout = self.rebuild_layout();
                 self.srv.send_to(node, Message::Welcome { layout: layout.clone() });
                 self.srv.broadcast(Message::LayoutUpdate { layout });
+                self.persist();
                 self.sync_status_peers();
                 self.sync_status_known();
             }
@@ -190,15 +215,13 @@ impl Server {
                 if let Some(n) = self.nodes.iter().find(|n| n.id == node) {
                     let addr = self.peer_addrs.get(&node).map(|a| a.to_string());
                     known::record_seen(&mut self.known, node, n.name.clone(), n.os, addr, now_unix());
-                    self.persist_known();
                 }
                 self.nodes.retain(|n| n.id != node);
                 self.peer_addrs.remove(&node);
                 self.pings.remove(&node);
                 self.latencies.remove(&node);
-                let layout = Layout::horizontal_row(self.nodes.clone());
                 let was_active = self.ctrl.active() == node;
-                self.ctrl.set_layout(layout.clone());
+                let layout = self.rebuild_layout();
                 if was_active {
                     // On contrôlait ce client : retour forcé en local.
                     self.grabbing.store(false, Ordering::Relaxed);
@@ -208,6 +231,7 @@ impl Server {
                     let _ = self.inject_tx.send(InjectCmd::Warp(self.center.0, self.center.1));
                 }
                 self.srv.broadcast(Message::LayoutUpdate { layout });
+                self.persist();
                 self.sync_status_peers();
                 self.sync_status_known();
                 if was_active {
@@ -379,6 +403,57 @@ impl Server {
         self.status.update(|st| st.known_offline = offline.clone());
     }
 
+    /// Recopie la géométrie de la disposition dans l'état exposé à l'UI.
+    fn sync_status_layout(&self, layout: &Layout) {
+        let geom = layout_geometry(layout);
+        self.status.update(|st| st.layout = geom.clone());
+    }
+
+    /// Recalcule la disposition depuis les nœuds courants + positions
+    /// mémorisées, met à jour le contrôleur et l'état exposé, et renvoie la
+    /// disposition (à diffuser par l'appelant). Les positions des nœuds absents
+    /// sont conservées (une machine revient à sa place).
+    fn rebuild_layout(&mut self) -> Layout {
+        let layout = placement::build_layout(self.nodes.clone(), &self.screen_positions);
+        for (id, pos) in &layout.positions {
+            self.screen_positions.insert(*id, *pos);
+        }
+        self.ctrl.set_layout(layout.clone());
+        self.sync_status_layout(&layout);
+        layout
+    }
+
+    /// Applique un repositionnement d'écrans (commande `set_layout`). Valide
+    /// l'existence des nœuds et l'absence de chevauchement, puis applique,
+    /// rediffuse et persiste. Renvoie une erreur lisible si invalide.
+    fn set_layout(&mut self, entries: Vec<(NodeId, i32, i32)>) -> Result<(), String> {
+        let mut merged = self.screen_positions.clone();
+        for (id, x, y) in &entries {
+            if !self.nodes.iter().any(|n| n.id == *id) {
+                return Err(format!("nœud inconnu : {id}"));
+            }
+            merged.insert(*id, (*x, *y));
+        }
+        // Vérifie les chevauchements sur les nœuds *présents*.
+        let rects: Vec<(NodeId, Rect)> = self
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                let &(x, y) = merged.get(&n.id)?;
+                Some((n.id, Rect { x, y, w: n.screen.width, h: n.screen.height }))
+            })
+            .collect();
+        if let Some((a, b)) = first_overlap(&rects) {
+            return Err(format!("les écrans {a} et {b} se chevauchent"));
+        }
+
+        self.screen_positions = merged;
+        let layout = self.rebuild_layout();
+        self.srv.broadcast(Message::LayoutUpdate { layout });
+        self.persist();
+        Ok(())
+    }
+
     /// Envoie un Ping à chaque client connecté et note l'instant d'émission
     /// (au plus un ping en vol par client — un ping non répondu est écrasé).
     fn send_pings(&mut self) {
@@ -401,25 +476,30 @@ impl Server {
             ControlCmd::Forget(id) => {
                 if known::forget(&mut self.known, id) {
                     info!(%id, "machine oubliée");
-                    self.persist_known();
+                    self.persist();
                     self.sync_status_known();
                 }
             }
+            ControlCmd::SetLayout(entries) => match self.set_layout(entries) {
+                Ok(()) => info!("disposition mise à jour"),
+                Err(e) => warn!(error = %e, "set_layout rejeté"),
+            },
         }
     }
 
-    /// Persiste la liste des machines connues dans la config. On **relit** le
-    /// fichier avant d'écrire pour ne pas écraser un autre champ (ex. le nom)
-    /// modifié entre-temps par une autre voie.
-    fn persist_known(&self) {
+    /// Persiste les machines connues **et** les positions d'écrans dans la
+    /// config. On **relit** le fichier avant d'écrire pour ne pas écraser un
+    /// autre champ (ex. le nom) modifié entre-temps par une autre voie.
+    fn persist(&self) {
         match Config::load_or_create(&self.config_path) {
             Ok(mut c) => {
                 c.known_peers = self.known.clone();
+                c.set_screen_positions(&self.screen_positions);
                 if let Err(e) = c.save(&self.config_path) {
-                    warn!(error = %e, "sauvegarde des machines connues impossible");
+                    warn!(error = %e, "sauvegarde de la config impossible");
                 }
             }
-            Err(e) => warn!(error = %e, "relecture de la config impossible (machines connues)"),
+            Err(e) => warn!(error = %e, "relecture de la config impossible"),
         }
     }
 
@@ -510,9 +590,13 @@ pub async fn run_client(
                     }
                     Message::Welcome { layout } | Message::LayoutUpdate { layout } => {
                         debug!(nodes = layout.nodes.len(), "disposition reçue");
+                        let geom = layout_geometry(&layout);
                         layout_nodes = layout.nodes;
                         let peers = client_peers(&layout_nodes, self_id, server_id, server_latency);
-                        status.update(|st| st.peers = peers.clone());
+                        status.update(|st| {
+                            st.peers = peers.clone();
+                            st.layout = geom.clone();
+                        });
                     }
                     // Réponse à notre propre Ping : latence vers le serveur.
                     Message::Pong => {
