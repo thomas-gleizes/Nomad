@@ -188,11 +188,47 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  # Emballe l'app macOS native (Nomad.app) : exécutable SwiftPM + démon nomad
+  # embarqué (récupéré de l'artefact aarch64 du job `build`). Signature ad-hoc
+  # seulement : la signature Developer ID + notarisation viendront à l'étape 9.
+  build-macos-app:
+    name: macOS app
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download macOS daemon
+        uses: actions/download-artifact@v4
+        with:
+          name: nomad-aarch64-apple-darwin
+          path: daemon-dist
+
+      - name: Extract daemon binary
+        run: tar xzf daemon-dist/*.tar.gz -C daemon-dist
+
+      - name: Build & assemble Nomad.app
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x daemon-dist/nomad
+          asset="$(apps/macos/Packaging/make-app.sh "$VERSION" "$PWD/daemon-dist/nomad" "$PWD/dist")"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nomad-macos-app
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
   # Publie UNE release avec tous les assets ; c'est ici (et seulement ici,
   # tests et builds passés) que le tag est créé, sur le commit du run.
   release:
     name: Publish
-    needs: [version, build]
+    needs: [version, build, build-macos-app]
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts

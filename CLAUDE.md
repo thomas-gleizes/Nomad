@@ -63,6 +63,8 @@ Layout defaults to a horizontal left-to-right row in connection order (server le
 
 `.github/workflows/release.yml` builds Linux/Windows/macOS-aarch64 on every push to `main` and on `v*` tags. **A GitHub Release is only published on tag pushes** (`if: startsWith(github.ref, 'refs/tags/')`); pushes to `main` only upload downloadable build artifacts. To cut a release, push a tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
+The macOS **native app** is packaged by the `build-macos-app` job: it embeds the release daemon into a `Nomad.app` bundle via `apps/macos/Packaging/make-app.sh` and attaches the zip to the release. The app is **ad-hoc signed only** — Developer ID signing + notarisation (so it opens without a Gatekeeper warning) are deferred to étape 9.
+
 ## Platform permissions
 
 - **macOS**: the executable needs both **Accessibility** and **Input Monitoring** (System Settings → Privacy & Security). Without them capture (server) and injection (client) silently do nothing.
