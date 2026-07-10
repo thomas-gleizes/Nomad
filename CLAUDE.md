@@ -22,6 +22,8 @@ CLI flags: `--server` (force role), `--name`, `--port` (default 47800), `--disco
 
 On macOS/Windows a native **tray / menu-bar icon** (crate `nomad-ui`) shows role, name, screen, connected peers and the active screen, with actions (rename, force server, reconnect, quit). It is disabled with `--headless` and is a no-op on Linux (headless).
 
+On macOS a fuller **native app** lives in [`apps/macos/`](apps/macos/) (SwiftUI Swift Package): menu-bar icon + a console window with a sidebar (Machines page live, others placeholders). It is a **thin client of `nomad-ipc`** (zero business logic) that spawns/supervises the daemon in `--headless`; it will supersede the `nomad-ui` tray on macOS. Build with `swift build` / open the folder in Xcode.
+
 ## Architecture
 
 Cargo workspace, 7 crates ordered pure → OS-dependent. The key design principle: **all OS-sensitive code (`rdev`, `enigo`, `arboard`, tray UI) is isolated behind portable vocabulary types from `nomad-core`, so orchestration and edge logic stay pure and unit-testable.**

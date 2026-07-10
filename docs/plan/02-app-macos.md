@@ -3,6 +3,23 @@
 > Plan détaillé de l'étape 2 de [ROADMAP.md](ROADMAP.md). Dépend de l'étape 1
 > (`nomad-ipc`) : l'app est un **client léger** de l'API du démon, zéro logique
 > métier côté Swift.
+>
+> **Statut : implémentée** dans [`apps/macos/`](../../apps/macos/). `MenuBarExtra`
+> (parité tray), fenêtre console à barre latérale 6 sections (Machines réelle,
+> reste en espaces réservés), client IPC `NWConnection`/JSON-lines avec
+> reconnexion à backoff, `DaemonManager` (détection/spawn/supervision). Compile
+> avec `swift build` ; l'app démarre et lance bien le démon (validé au runtime).
+>
+> **Écart assumé vs plan** : **Swift Package** (`Package.swift`) au lieu d'un
+> `.xcodeproj`. Raison : compilable et vérifiable avec les seules Command Line
+> Tools (pas de Xcode complet requis ici), s'ouvre quand même dans Xcode, et
+> évite un `project.pbxproj` fragile écrit à la main. App accessoire via
+> `setActivationPolicy(.accessory)` (pas d'`Info.plist`/`LSUIElement`).
+>
+> **Non vérifié ici** (nécessite une session GUI interactive / la permission
+> Accessibilité du démon) : l'affichage live du menu et de la page Machines
+> alimentés par un démon serveur qui reste en vie. La liaison app→démon (spawn,
+> résolution du binaire, boucle IPC) est, elle, confirmée au runtime.
 
 ## Objectif
 
